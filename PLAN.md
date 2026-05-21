@@ -9,11 +9,11 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
 
 ## Week 1 — plumbing & happy path
 
-- [ ] **Day 0 — Accounts & credentials** *(boring, do first)*
-  - [ ] Google Cloud project created, Gmail API + Sheets API enabled
-  - [ ] OAuth credentials (Desktop app), `credentials.json` downloaded to `./secrets/`
-  - [ ] Supabase project created, connection string saved
-  - [ ] OpenAI API key in `.env`
+- [x] **Day 0 — Accounts & credentials** *(boring, do first)*
+  - [x] Google Cloud project created, Gmail API + Sheets API enabled
+  - [x] OAuth credentials (Desktop app), `credentials.json` downloaded to `./secrets/`
+  - [x] Supabase project created, connection string saved
+  - [x] Gemini API key in `.env`
 
 - [ ] **Day 1 — Gmail read** *(half day for OAuth screens — that's normal)*
   - [ ] OAuth handshake working from .NET worker
