@@ -16,10 +16,14 @@ A running log of non-obvious choices made during the build. The reasoning here f
 - Microsoft Agent Framework (announced 2025) is the evolution of SK + AutoGen, but still maturing.
 - Thesis defense in 2026 → safer to build on the stable SDK and reference MAF as future direction.
 
-### LLM provider: OpenAI
-- GPT-4o-mini for routine parsing (cheap, fast, structured output).
-- GPT-4o for reconciliation reasoning and vision fallback on scanned PDFs.
-- Swappable via Semantic Kernel — could move to Anthropic/Azure/local later.
+### LLM provider: Anthropic (Claude)
+- Claude 3.5 Sonnet (or Haiku for cheaper routine extraction).
+- Native vision in every model → unified handling of text and scanned PDFs.
+- Single provider across the whole pipeline (cleaner architecture story).
+- Note: Semantic Kernel's official connectors are OpenAI/Azure; Anthropic
+  is wired in via a custom `IChatCompletionService` or the community
+  `Microsoft.SemanticKernel.Connectors.Anthropic` package. Documented as
+  a minor integration cost.
 
 ### Email ingestion: Gmail API with label filter
 - Chose Gmail API over IMAP — cleaner OAuth, richer metadata, push notifications via Pub/Sub possible later.

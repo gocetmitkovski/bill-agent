@@ -23,7 +23,7 @@ Built as the practical demo for my bachelor thesis on agentic AI systems.
 
 - **.NET 9** + C#
 - **Semantic Kernel** for agent orchestration
-- **OpenAI GPT-4o-mini** (parsing) + **GPT-4o** (reconciliation, vision fallback)
+- **Anthropic Claude** (Sonnet for reasoning, Haiku for routine extraction; vision native)
 - **Gmail API** for ingestion
 - **Google Sheets API** for output
 - **PdfPig** for PDF text extraction
