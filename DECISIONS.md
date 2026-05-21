@@ -16,14 +16,19 @@ A running log of non-obvious choices made during the build. The reasoning here f
 - Microsoft Agent Framework (announced 2025) is the evolution of SK + AutoGen, but still maturing.
 - Thesis defense in 2026 → safer to build on the stable SDK and reference MAF as future direction.
 
-### LLM provider: Anthropic (Claude)
-- Claude 3.5 Sonnet (or Haiku for cheaper routine extraction).
+### LLM provider: Google Gemini (free tier)
+- Gemini 2.0 Flash (and 2.5 Flash) on the free tier: ~15 req/min, 1500/day,
+  1M tokens/min. Vastly more than this project needs.
 - Native vision in every model → unified handling of text and scanned PDFs.
-- Single provider across the whole pipeline (cleaner architecture story).
-- Note: Semantic Kernel's official connectors are OpenAI/Azure; Anthropic
-  is wired in via a custom `IChatCompletionService` or the community
-  `Microsoft.SemanticKernel.Connectors.Anthropic` package. Documented as
-  a minor integration cost.
+- Zero project cost; no payment method required.
+- Already in the Google ecosystem (Gmail + Sheets), so credentials and
+  billing live in one place.
+- Thesis defense story: deliberate cost-aware choice, no vendor lock-in,
+  no payment method gating reproducibility.
+- Note: Semantic Kernel's official connectors are OpenAI/Azure; Google
+  Gemini is wired in via the community
+  `Microsoft.SemanticKernel.Connectors.Google` package or a custom
+  `IChatCompletionService`. Documented as a minor integration cost.
 
 ### Email ingestion: Gmail API with label filter
 - Chose Gmail API over IMAP — cleaner OAuth, richer metadata, push notifications via Pub/Sub possible later.
