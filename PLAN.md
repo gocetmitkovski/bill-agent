@@ -15,10 +15,10 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] Supabase project created, connection string saved
   - [x] Gemini API key in `.env`
 
-- [ ] **Day 1 — Gmail read** *(half day for OAuth screens — that's normal)*
-  - [ ] OAuth handshake working from .NET worker
-  - [ ] List messages with label "bills" in console
-  - [ ] Commit: "feat: gmail oauth + label listing"
+- [x] **Day 1 — Gmail read** *(half day for OAuth screens — that's normal)*
+  - [x] OAuth handshake working from .NET worker
+  - [x] List messages with label "bills" in console
+  - [x] Commit: "feat: gmail oauth + label listing"
 
 - [ ] **Day 2 — PDF extraction**
   - [ ] Download attachment from one labeled message

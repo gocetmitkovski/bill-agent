@@ -8,6 +8,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="DotNetEnv" Version="3.2.0" />
+    <PackageReference Include="Google.Apis.Auth" Version="1.74.0" />
+    <PackageReference Include="Google.Apis.Gmail.v1" Version="1.74.0.4148" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.3" />
   </ItemGroup>
 </Project>
