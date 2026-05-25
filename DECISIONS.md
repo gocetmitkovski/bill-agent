@@ -143,3 +143,55 @@ Considered building an `IBillSource` interface up front so the system could inge
 - The *agent layer's invariance* under ingestion-source changes is itself a defensible architectural property — it demonstrates that the agentic logic is genuinely decoupled from input plumbing.
 
 **Defense talking point:** "I designed for extension but deliberately did not abstract until a second concrete case existed, following the Rule of Three. The provider-neutral shapes (`EmailContent`, `byte[]`) and the surgical isolation of Gmail coupling mean adding a second source is a mechanical refactor, not a redesign."
+
+---
+
+## 2026-05-23 — Architecture pivot: Telegram bot replaces Blazor dashboard
+
+Day 10 was originally a single-page Blazor dashboard reading `email_log` — a "glass box" UI for the examiner. User proposed replacing it with a Telegram bot that (a) pushes notifications about bill activity and (b) hosts Agent C as a natural-language query interface in the same chat. After analysis, this is a strict upgrade.
+
+### Why Telegram beats the dashboard
+
+- **Push beats pull.** A dashboard requires the user to remember to open it. A bot initiates contact — "new invoice from Vodovod, 1,247 MKD, due 30.06.2025." The agent becomes a thing that *talks to you*, not a thing you visit.
+- **Real product, not defense theater.** The Blazor page exists to impress examiners; the user would never actually open it day-to-day. The Telegram bot is what the user genuinely wants. Examiners respond *better* to systems that are honestly used than to systems built only for demos.
+- **Single channel for notifications + Q&A.** Agent B pushes events into the chat. Agent C answers questions in the same chat. One UI surface, two roles, zero context switching.
+- **Voice path becomes trivial.** Telegram natively supports voice messages → Whisper transcription → Agent C → text/voice reply. The voice query agent (Agent C in the original plan) is no longer a separate UI track; it's a 1-day add-on to the bot.
+
+### Architecture
+
+```
+Gmail ─► Agent A ─► Agent B ─► Database
+                       │            │
+                       ▼            ▼
+                   Telegram bot (push)
+                       ▲
+                       │  user messages
+                       ▼
+                    Agent C (query) ─► DB tools
+```
+
+- **Agent B's tool set gains** `send_telegram_notification(chat_id, text)` so the reconciler decides when to ping the user (new invoice / payment matched / needs review / due-soon reminder).
+- **Agent C** is a Semantic Kernel chat agent behind the bot's incoming-message handler. Tools: `list_bills(filter)`, `bill_status(id)`, `monthly_summary(month)`, `unpaid_count()`, `yearly_total(year)`. Stateless except for per-chat short-term ChatHistory so follow-ups ("what about gas?") work.
+- **Direct Telegram Bot API for v1** via the `Telegram.Bot` NuGet package + long-polling. Webhooks + deployment are future work, consistent with the existing "local laptop demo" decision.
+
+### MCP as a v2 thesis-flex upgrade
+
+The Model Context Protocol (MCP) is the 2024-2025 open standard for exposing tools to LLM agents. Day-13 buffer time, if available, can upgrade the Telegram integration to go through an MCP Telegram server instead of the direct API. Functionally identical, architecturally fancier — and earns a paragraph in the paper:
+
+> "Tool integration uses the open Model Context Protocol, demonstrating that the architecture is interoperable with any MCP-conformant tool surface. The Telegram integration is therefore swappable with Slack, Discord, or calendar tools without modifying the agent layer."
+
+This is a *contemporary, citable, current* standard. Examiners reward use of current open standards correctly.
+
+### Three-agent map (updated)
+
+- **Agent A — Perception.** Email → JSON. Unchanged.
+- **Agent B — Action.** JSON → DB + Sheet + Telegram notifications. *Gains tool: telegram notify.*
+- **Agent C — Retrieval.** Telegram message → DB query → reply. *Promoted from "v2 stretch goal" to shipped v1.*
+
+The original three-role taxonomy (perception → action → retrieval) survives unchanged — only the UI surface for Agent C changes from "voice / Blazor query box" to "Telegram chat."
+
+### What's lost, what's gained
+
+**Lost:** the visual `email_log` table view in a browser. Mitigation: Agent C can answer "show me the last 5 emails the agent processed" with the same data, plus reasoning. The audit trail still exists in DB — only the dedicated UI is gone.
+
+**Gained:** real product utility, push notifications, voice-ready surface, MCP upgrade path, simpler stack (no Blazor server in the deployment story).

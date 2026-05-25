@@ -67,10 +67,13 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [ ] Idempotency: skip already-processed `gmail_message_id`
   - [ ] Commit: "feat: continuous polling worker"
 
-- [ ] **Day 10 — Blazor dashboard** *(thesis polish)*
-  - [ ] One page, reads `email_log` table
-  - [ ] Shows last 20 emails: decision, confidence, agent reasoning
-  - [ ] Commit: "feat: agent activity dashboard"
+- [ ] **Day 10 — Telegram bot + Agent C** *(replaces Blazor dashboard — see DECISIONS.md)*
+  - [ ] Create bot via @BotFather, store token in secrets
+  - [ ] `Telegram.Bot` NuGet + long-polling client
+  - [ ] Push notifications from Agent B (new invoice / payment confirmed / needs review)
+  - [ ] Agent C: query agent with tools (`list_bills`, `bill_status`, `monthly_summary`, `unpaid_count`, `yearly_total`)
+  - [ ] Chat history per user_id so follow-up questions work
+  - [ ] Commit: "feat: telegram bot + query agent"
 
 - [ ] **Day 11 — Edge cases**
   - [ ] Vision fallback when PdfPig returns empty text
