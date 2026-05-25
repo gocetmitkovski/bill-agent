@@ -89,3 +89,35 @@ OAuth connection established and labeled-email reading confirmed end-to-end. Det
 3. Unverified-app warning ("Google hasn't verified this app") is unavoidable without going through Google's verification process (security review + privacy policy + sometimes paid audit for sensitive scopes). Acceptable for a thesis demo; would block real users.
 
 Verified working: 2 forwarded bills auto-labeled `utility-bills`, both message IDs returned by the worker on `dotnet run`.
+
+---
+
+## 2026-05-23 — Day 2: PDF extraction + multi-agent architecture decisions
+
+### What shipped
+- `GmailReader.GetPdfAttachmentsAsync` — walks MIME parts (recursive — Gmail nests multipart arbitrarily), fetches each `application/pdf` part via Gmail's separate attachment endpoint, base64url-decodes the bytes.
+- `GmailReader.ExtractContent` — flattens a Gmail message into a flat `EmailContent` record (Subject, From, Date, Snippet, BodyPlain, BodyHtml) — clean shape for downstream LLM consumption.
+- `PdfTextExtractor` — thin PdfPig wrapper, opens PDF from byte[], walks pages, concatenates text. Pure C#, no native deps.
+- `Worker.cs` now prints headers + body + PDF text per message.
+
+### Key discovery: Macedonian PDF font encoding is broken
+Running against a real Vodovod (water company) invoice produced text where numbers/Latin chars/email/URL extract perfectly, but all Cyrillic body text is mapped to wrong code points (e.g. `Колекторски` came out as `ǲȖȓȍȒȚȖȘșȒȐ`).
+
+Root cause: the PDF embeds a custom Macedonian font but skips the **ToUnicode CMap** — the optional dictionary that maps glyph IDs to Unicode code points. The PDF renders visually correct (the glyph at slot N *looks* like 'К') but any text extractor gets raw glyph IDs and has no way to recover Unicode. This is permitted by the PDF spec and unfortunately common among utility billers worldwide. Not a PdfPig bug — same failure with iText, pdftotext, Adobe's own copy-text.
+
+**Architectural consequence for the paper:** the LLM-vision fallback is no longer a hypothetical edge case for scanned PDFs — it's *the* primary path for Macedonian utility bills. PdfPig's clean number extraction still has value as a *cross-validation* signal ("if vision-extracted total ≠ numeric total found in PdfPig text, flag for review"). This kind of cross-checked dual-extraction is a defensible "agentic" design choice over single-source parsing.
+
+### Architecture decision: three-agent design (A → B + C)
+
+User proposed splitting agent work along role boundaries. Settled on:
+
+- **Agent A — Extractor.** Email subject + body + PDF text + (Day 3+) PDF first-page image → structured JSON `{kind, vendor, amount, currency, due_date, period, reference, confidence, reasoning}`. Strongest signal is the email subject (Macedonian utility companies use very consistent subject patterns: "Известување за успешно плаќање" = payment confirmation, "вашата електронска сметка од водовод за 05/2025" = invoice). Body/PDF are reinforcement.
+- **Agent B — Reconciler.** Takes JSON from A + tools (`query_pending_bills`, `mark_bill_paid`, `insert_new_bill`, `flag_for_review`). For an invoice → inserts a new pending bill. For a confirmation → finds matching pending bill (fuzzy: vendor name variations, amount within tolerance, period match) → marks paid or flags ambiguity. *This is where the genuinely agentic behavior lives — decision under uncertainty with tool use.*
+- **Agent C — Query Agent (v2 / stretch goal).** Natural-language Q&A interface over the bills database. Tools: `list_bills`, `bill_status`, `monthly_summary`, `unpaid_count`, `yearly_total`. Voice front-end (STT → Agent C → TTS) deferred to v2; would require Whisper integration + macOS audio APIs.
+
+This maps onto a classic three-role agent taxonomy: *perception → action → retrieval*. Clean paper structure.
+
+**Deliberately non-agentic components:** `SheetSync` (DB change → Google Sheet upsert) is plain code. Calling an LLM to update a cell would be "agent-washing." The thesis position is that something is agentic when it makes a *decision under uncertainty with tool use*, not when it's wrapped in an LLM call.
+
+### Multilingual generalization as a paper bullet
+Subject lines and body content are in Macedonian. Gemini handles this natively without translation, and the agent design uses zero hardcoded keywords. A rule-based pipeline would require a per-language keyword list per vendor; the LLM generalizes across languages by construction. Worth one bullet in the "advantages over rule-based extraction" section.

@@ -123,4 +123,103 @@ public class GmailReader
         req.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Full;
         return await req.ExecuteAsync(ct);
     }
+
+    /// <summary>
+    /// Walks a message's MIME parts and yields every PDF attachment as (filename, bytes).
+    /// Gmail stores attachments separately from the message body; we have to fetch each
+    /// attachment by its attachmentId in a second call.
+    /// </summary>
+    public async Task<IReadOnlyList<(string FileName, byte[] Bytes)>> GetPdfAttachmentsAsync(
+        Message message, CancellationToken ct)
+    {
+        if (_service is null)
+            throw new InvalidOperationException("Call InitializeAsync first.");
+
+        var results = new List<(string, byte[])>();
+        if (message.Payload is null) return results;
+
+        // MIME parts can be nested arbitrarily (multipart/mixed > multipart/alternative > part).
+        // Flatten the tree with a small recursive walker.
+        foreach (var part in EnumerateParts(message.Payload))
+        {
+            var isPdf =
+                string.Equals(part.MimeType, "application/pdf", StringComparison.OrdinalIgnoreCase) ||
+                (part.Filename ?? "").EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+
+            if (!isPdf) continue;
+            if (string.IsNullOrEmpty(part.Body?.AttachmentId)) continue;
+
+            var att = await _service.Users.Messages.Attachments
+                .Get("me", message.Id, part.Body.AttachmentId)
+                .ExecuteAsync(ct);
+
+            // Gmail returns attachment data base64url-encoded. .NET's Convert.FromBase64String
+            // doesn't accept the URL-safe variant, so we normalize first.
+            var bytes = Base64UrlDecode(att.Data);
+            results.Add((part.Filename ?? "attachment.pdf", bytes));
+        }
+
+        return results;
+    }
+
+    private static IEnumerable<MessagePart> EnumerateParts(MessagePart root)
+    {
+        yield return root;
+        if (root.Parts is null) yield break;
+        foreach (var child in root.Parts)
+            foreach (var nested in EnumerateParts(child))
+                yield return nested;
+    }
+
+    private static byte[] Base64UrlDecode(string s)
+    {
+        // Gmail uses URL-safe base64: '-' instead of '+', '_' instead of '/', no padding.
+        s = s.Replace('-', '+').Replace('_', '/');
+        switch (s.Length % 4) { case 2: s += "=="; break; case 3: s += "="; break; }
+        return Convert.FromBase64String(s);
+    }
+
+    /// <summary>
+    /// Pulls the headers and plaintext body out of a Gmail message into a flat shape
+    /// that's easy to feed to an LLM. We prefer text/plain; if the email is HTML-only
+    /// we return the HTML and let the next layer strip tags (or the LLM cope — Gemini does).
+    /// </summary>
+    public static EmailContent ExtractContent(Message message)
+    {
+        var headers = message.Payload?.Headers ?? new List<MessagePartHeader>();
+        string H(string name) => headers.FirstOrDefault(
+            h => string.Equals(h.Name, name, StringComparison.OrdinalIgnoreCase))?.Value ?? "";
+
+        string? plain = null;
+        string? html = null;
+
+        if (message.Payload is not null)
+        {
+            foreach (var part in EnumerateParts(message.Payload))
+            {
+                if (string.IsNullOrEmpty(part.Body?.Data)) continue;
+                var text = System.Text.Encoding.UTF8.GetString(Base64UrlDecode(part.Body.Data));
+                if (part.MimeType == "text/plain" && plain is null) plain = text;
+                else if (part.MimeType == "text/html" && html is null) html = text;
+            }
+        }
+
+        return new EmailContent(
+            Id: message.Id,
+            Subject: H("Subject"),
+            From: H("From"),
+            Date: H("Date"),
+            Snippet: message.Snippet ?? "",
+            BodyPlain: plain,
+            BodyHtml: html);
+    }
 }
+
+public record EmailContent(
+    string Id,
+    string Subject,
+    string From,
+    string Date,
+    string Snippet,
+    string? BodyPlain,
+    string? BodyHtml);

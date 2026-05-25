@@ -9,12 +9,18 @@ public class Worker : BackgroundService
 
     private readonly ILogger<Worker> _logger;
     private readonly GmailReader _gmail;
+    private readonly PdfTextExtractor _pdf;
     private readonly IHostApplicationLifetime _lifetime;
 
-    public Worker(ILogger<Worker> logger, GmailReader gmail, IHostApplicationLifetime lifetime)
+    public Worker(
+        ILogger<Worker> logger,
+        GmailReader gmail,
+        PdfTextExtractor pdf,
+        IHostApplicationLifetime lifetime)
     {
         _logger = logger;
         _gmail = gmail;
+        _pdf = pdf;
         _lifetime = lifetime;
     }
 
@@ -26,15 +32,49 @@ public class Worker : BackgroundService
             await _gmail.InitializeAsync(stoppingToken);
 
             _logger.LogInformation("Listing messages with label '{Label}'...", Label);
-            var messages = await _gmail.ListMessagesByLabelAsync(Label, MaxMessagesToList, stoppingToken);
+            var stubs = await _gmail.ListMessagesByLabelAsync(Label, MaxMessagesToList, stoppingToken);
+            _logger.LogInformation("Found {Count} message(s).", stubs.Count);
 
-            _logger.LogInformation("Found {Count} message(s) under label '{Label}':", messages.Count, Label);
-            foreach (var m in messages)
+            foreach (var stub in stubs)
             {
-                _logger.LogInformation("  - id={Id} threadId={ThreadId}", m.Id, m.ThreadId);
+                var full = await _gmail.GetMessageAsync(stub.Id, stoppingToken);
+                var content = GmailReader.ExtractContent(full);
+
+                Console.WriteLine();
+                Console.WriteLine("════════════════════════════════════════");
+                Console.WriteLine($"  ID:       {content.Id}");
+                Console.WriteLine($"  Date:     {content.Date}");
+                Console.WriteLine($"  From:     {content.From}");
+                Console.WriteLine($"  Subject:  {content.Subject}");
+                Console.WriteLine($"  Snippet:  {content.Snippet}");
+                Console.WriteLine("────────────────────────────────────────");
+
+                // Body — prefer plain text, fallback to HTML.
+                var body = content.BodyPlain ?? content.BodyHtml ?? "(no body)";
+                var bodyPreview = body.Length > 500 ? body[..500] + "..." : body;
+                Console.WriteLine("  BODY:");
+                Console.WriteLine(bodyPreview);
+
+                // PDF attachments — confirmations usually have none, invoices usually do.
+                var pdfs = await _gmail.GetPdfAttachmentsAsync(full, stoppingToken);
+                if (pdfs.Count == 0)
+                {
+                    Console.WriteLine("  PDFs:     none (likely a confirmation email)");
+                }
+                else
+                {
+                    foreach (var (filename, bytes) in pdfs)
+                    {
+                        Console.WriteLine("────────────────────────────────────────");
+                        Console.WriteLine($"  PDF:      {filename} ({bytes.Length} bytes)");
+                        var text = _pdf.Extract(bytes, filename);
+                        var pdfPreview = text.Length > 1000 ? text[..1000] + "..." : text;
+                        Console.WriteLine(pdfPreview);
+                    }
+                }
             }
 
-            _logger.LogInformation("Day 1 happy path complete. Shutting down.");
+            _logger.LogInformation("Day 2 happy path complete. Shutting down.");
         }
         catch (Exception ex)
         {
@@ -42,7 +82,6 @@ public class Worker : BackgroundService
         }
         finally
         {
-            // Day 1 is a one-shot. Future days will replace this with a polling loop.
             _lifetime.StopApplication();
         }
     }

@@ -20,11 +20,11 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] List messages with label "bills" in console
   - [x] Commit: "feat: gmail oauth + label listing"
 
-- [ ] **Day 2 — PDF extraction**
-  - [ ] Download attachment from one labeled message
-  - [ ] Extract text with PdfPig
-  - [ ] Print to console
-  - [ ] Commit: "feat: pdf text extraction"
+- [x] **Day 2 — PDF extraction**
+  - [x] Download attachment from one labeled message
+  - [x] Extract text with PdfPig
+  - [x] Print to console
+  - [x] Commit: "feat: pdf text extraction"
 
 - [ ] **Day 3 — First LLM extraction**
   - [ ] Semantic Kernel set up with OpenAI
