@@ -26,11 +26,11 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] Print to console
   - [x] Commit: "feat: pdf text extraction"
 
-- [ ] **Day 3 — First LLM extraction**
-  - [ ] Semantic Kernel set up with OpenAI
-  - [ ] Prompt: given email subject/body/pdf text → JSON {vendor, amount, due_date, period, type, confidence}
-  - [ ] Try it on one real bill, print JSON
-  - [ ] Commit: "feat: llm field extraction"
+- [x] **Day 3 — First LLM extraction**
+  - [x] Semantic Kernel set up with OpenAI
+  - [x] Prompt: given email subject/body/pdf text → JSON {vendor, amount, due_date, period, type, confidence}
+  - [x] Try it on one real bill, print JSON
+  - [x] Commit: "feat: llm field extraction"
 
 - [ ] **Day 4 — Database**
   - [ ] Supabase schema: `bills`, `payments`, `email_log` (see DECISIONS.md)

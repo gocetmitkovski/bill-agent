@@ -195,3 +195,76 @@ The original three-role taxonomy (perception → action → retrieval) survives 
 **Lost:** the visual `email_log` table view in a browser. Mitigation: Agent C can answer "show me the last 5 emails the agent processed" with the same data, plus reasoning. The audit trail still exists in DB — only the dedicated UI is gone.
 
 **Gained:** real product utility, push notifications, voice-ready surface, MCP upgrade path, simpler stack (no Blazor server in the deployment story).
+
+---
+
+## 2026-05-23 — Day 3: Agent A (Extractor) wired to Gemini via Semantic Kernel
+
+### What shipped
+
+- **`BillExtraction` record** — the structured-output contract Agent A produces and Agent B consumes. Fields: `Kind` ("invoice" | "payment_confirmation" | "other"), `Vendor`, `Amount`, `Currency`, `DueDate`, `PaidDate`, `Period`, `Reference`, `Confidence` (0.0–1.0), `Reasoning` (one-sentence audit trail). C# record → immutable, serializes cleanly via `System.Text.Json`.
+- **`BillExtractor` service** — Agent A. Single Semantic Kernel chat-completion call to Gemini 2.0 Flash with JSON-mode output (`ResponseMimeType = "application/json"`) and temperature 0.1 for deterministic extraction. No tool use — extraction is a pure `(EmailContent, pdfText) → BillExtraction` transform.
+- **System prompt** — encodes Macedonian utility-mail patterns *as patterns, not keyword lists*. Tells the model that the subject line is the strongest signal, and that PDF Cyrillic text may be glyph-encoding broken (trust numbers, distrust Cyrillic words from PDF, prefer email subject for vendor). This turns Day 2's encoding bug into the agent's documented runtime behavior.
+- **Graceful failure path** — if Gemini returns unparseable JSON, return a low-confidence "other" record with the exception message as reasoning. Day 11 will route low-confidence outputs to `needs_review`.
+
+### Framework choice: Semantic Kernel over Microsoft Agent Framework
+
+Considered Microsoft Agent Framework (MAF) — the 2024 GA successor to Semantic Kernel and AutoGen, which exposes multi-agent orchestration, agent memory, and human-in-the-loop as first-class primitives. Deliberately stayed with Semantic Kernel.
+
+**Reasoning:**
+
+1. **Stability over recency for a 2-week timeline.** SK has been GA since December 2023 with mature Gemini connectors (the connector is marked experimental, but it works and is stable). MAF's API surface is still shifting between minor versions — debugging a moving target inside a thesis deadline is unjustified risk.
+
+2. **Manual orchestration is part of the thesis contribution.** If MAF handles A→B→C handoffs as a built-in primitive, the claim "I built an agentic system" weakens — the *framework* did the orchestration. By using SK as a chat-completion abstraction and hand-rolling the agent-handoff logic, the multi-agent design itself is the author's contribution rather than the framework's. For a thesis on agentic systems, this is the stronger position.
+
+3. **MAF as a credible future-work paragraph.** The choice can be presented as informed and forward-looking rather than conservative: "Initial implementation chose Semantic Kernel for connector maturity and timeline stability. Microsoft Agent Framework, which generalizes SK + AutoGen and reached general availability in 2025, would be the natural target for a v2 reimplementation; the agent-handoff patterns implemented manually in this work are first-class primitives in MAF, making the migration mechanically straightforward." This shows awareness of the ecosystem and a clean upgrade path, both of which strengthen the paper.
+
+4. **Ecosystem support.** SK has years of blog posts, Stack Overflow answers, and community samples. When stuck — and a developer returning from a 15-year coding gap *will* get stuck — this matters more than architectural elegance.
+
+**Defense talking point:** "MAF is the future direction Microsoft is investing in for agentic systems, and the architecture here would port to it directly. The choice to build on SK was deliberate: it placed the multi-agent design responsibility in this codebase rather than delegating it to a framework abstraction, which is consistent with the thesis position that the agent design is the contribution, not the choice of vendor."
+
+### Gemini free-tier rate limit: 429 on input tokens per minute
+
+First end-to-end run hit `429 Too Many Requests` on the second email. Diagnosed via direct curl against `generativelanguage.googleapis.com` — the quota that tripped was `GenerateContentInputTokensPerModelPerMinute-FreeTier`, not `RequestsPerMinute`. Macedonian PDF text containing broken-encoding Cyrillic produces high token counts (multi-byte UTF-8 sequences in non-Latin scripts), which can exhaust the per-minute input-token budget after only 1–2 large emails.
+
+**Fix:** added `CallWithRetryAsync` wrapper in `BillExtractor` — catches `HttpOperationException` with status 429, retries with exponential backoff (5s → 15s → 30s). Three retries then propagate. This is the correct behavior any production LLM client should have: rate limits on hosted APIs are transient by design, and the provider's own documentation prescribes retry-with-backoff as the canonical response. Treating the retry as a "fix" rather than a "hack" is the appropriate framing — the *bug* was the absence of retry, not the API returning 429.
+
+**Worth one paragraph in the paper:** the LLM provider's quotas are an operational constraint that the agent architecture must accommodate transparently. Centralizing the retry policy in a single helper inside the extractor (rather than spreading try/catch across callers) is a small but defensible design choice. A production deployment would extend this to: queueing under sustained pressure, fallback to a different model when the primary is rate-limited (Gemini Flash → Gemini Flash-Lite, or → local Ollama), and circuit-breaker patterns. v1 ships with retry-with-backoff; full resilience is documented as future work.
+
+### Multilingual prompt design as a thesis bullet (revisited)
+
+The system prompt does not list any Macedonian keywords. It describes Macedonian invoice/confirmation subject-line *patterns* in English, and asks the model to apply those patterns. The Macedonian-language understanding lives in Gemini's pretraining, not in our code. A rule-based pipeline would need per-language keyword lists per vendor; this design extends to any language Gemini supports with zero code changes. Confirmed working on Macedonian emails (subject `"Известување за успешно плаќање"` correctly classified as `payment_confirmation`, subject `"вашата електронска сметка..."` correctly classified as `invoice`).
+
+### Empirical validation (first real run)
+
+End-to-end run against two real labeled emails produced clean structured output on both:
+
+**Payment confirmation** (`"Известување за успешно плаќање"`, no PDF):
+- Vendor extracted from email body: *ЈП Колекторски систем - Скопје* (the Skopje sewerage authority)
+- Amount: 63.00 MKD
+- PaidDate: 2025-06-14 (correctly populated)
+- DueDate: null (correctly omitted — confirmations don't carry due dates)
+- Reference: transaction code from the body
+- Confidence: 1.0
+- Reasoning citation: the Macedonian subject line
+
+**Invoice** (`"Вашата електронска сметка од Колекторски систем за 05/2025"`, with the broken-Cyrillic PDF):
+- Vendor extracted from email subject (clean text path): *ЈП Колекторски систем Скопје*
+- Amount: 63.00 MKD (extracted from the PDF — numbers extract cleanly even with broken Cyrillic font mapping)
+- DueDate: 2025-06-30 (from PDF)
+- PaidDate: null (correctly omitted — invoice, not paid yet)
+- Period: 2025-05 (from PDF)
+- Reference: 25051450182 (invoice number from PDF)
+- Confidence: 1.0
+- Reasoning citation: subject keywords + PDF numeric details together
+
+This is direct empirical evidence for two architectural claims:
+
+1. **Cross-source extraction works.** Agent A correctly used the email subject/body for Cyrillic vendor names (clean text) and the PDF for numeric fields (clean even with broken fonts). The model implicitly routed each field to its most reliable source — exactly the strategy the prompt asked for, without any hand-written rules.
+2. **The reconciliation surface is set up.** Both emails reference the same vendor (modulo a hyphen). Agent B's tool-using reconciliation prompt (Day 7) will therefore have a real, slightly-noisy matching task — the *interesting* case where fuzzy matching is genuinely needed, not a toy.
+
+### Diagnose-via-curl as an engineering pattern
+
+Day 3 hit a 429 that retries couldn't clear. Direct curl against `generativelanguage.googleapis.com` revealed `limit: 0, model: gemini-2.0-flash` — i.e., the *free-tier quota for that model is zero*, not exhausted. The SDK exception ("429 Too Many Requests") was technically correct but practically misleading; the underlying HTTP response carried the precise diagnostic ("quotaId" with explicit limit value) that the SDK never surfaced.
+
+**Engineering pattern worth one paragraph in the paper's "Operational Lessons" section:** when an SDK gives an inscrutable error, hit the underlying HTTP endpoint directly with curl. APIs designed for direct use tend to return rich diagnostic JSON; SDKs often discard those details when mapping responses to exceptions. The fix here (switching to `gemini-2.5-flash`, the current free-tier model after Google moved the default in mid-2025) took 30 seconds once the actual cause was visible.

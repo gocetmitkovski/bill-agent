@@ -1,3 +1,4 @@
+using System.Text.Json;
 using BillAgent.Worker.Services;
 
 namespace BillAgent.Worker;
@@ -10,17 +11,20 @@ public class Worker : BackgroundService
     private readonly ILogger<Worker> _logger;
     private readonly GmailReader _gmail;
     private readonly PdfTextExtractor _pdf;
+    private readonly BillExtractor _extractor;
     private readonly IHostApplicationLifetime _lifetime;
 
     public Worker(
         ILogger<Worker> logger,
         GmailReader gmail,
         PdfTextExtractor pdf,
+        BillExtractor extractor,
         IHostApplicationLifetime lifetime)
     {
         _logger = logger;
         _gmail = gmail;
         _pdf = pdf;
+        _extractor = extractor;
         _lifetime = lifetime;
     }
 
@@ -40,41 +44,33 @@ public class Worker : BackgroundService
                 var full = await _gmail.GetMessageAsync(stub.Id, stoppingToken);
                 var content = GmailReader.ExtractContent(full);
 
+                // Concatenate PDF text from all PDF attachments (most invoices have just one).
+                var pdfs = await _gmail.GetPdfAttachmentsAsync(full, stoppingToken);
+                string? pdfText = null;
+                if (pdfs.Count > 0)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var (filename, bytes) in pdfs)
+                        sb.AppendLine(_pdf.Extract(bytes, filename));
+                    pdfText = sb.ToString();
+                }
+
                 Console.WriteLine();
                 Console.WriteLine("════════════════════════════════════════");
-                Console.WriteLine($"  ID:       {content.Id}");
-                Console.WriteLine($"  Date:     {content.Date}");
-                Console.WriteLine($"  From:     {content.From}");
-                Console.WriteLine($"  Subject:  {content.Subject}");
-                Console.WriteLine($"  Snippet:  {content.Snippet}");
-                Console.WriteLine("────────────────────────────────────────");
+                Console.WriteLine($"  Subject: {content.Subject}");
+                Console.WriteLine($"  From:    {content.From}");
+                Console.WriteLine($"  PDFs:    {pdfs.Count}");
+                Console.WriteLine("────────── Agent A says ──────────");
 
-                // Body — prefer plain text, fallback to HTML.
-                var body = content.BodyPlain ?? content.BodyHtml ?? "(no body)";
-                var bodyPreview = body.Length > 500 ? body[..500] + "..." : body;
-                Console.WriteLine("  BODY:");
-                Console.WriteLine(bodyPreview);
-
-                // PDF attachments — confirmations usually have none, invoices usually do.
-                var pdfs = await _gmail.GetPdfAttachmentsAsync(full, stoppingToken);
-                if (pdfs.Count == 0)
+                var extraction = await _extractor.ExtractAsync(content, pdfText, stoppingToken);
+                var pretty = JsonSerializer.Serialize(extraction, new JsonSerializerOptions
                 {
-                    Console.WriteLine("  PDFs:     none (likely a confirmation email)");
-                }
-                else
-                {
-                    foreach (var (filename, bytes) in pdfs)
-                    {
-                        Console.WriteLine("────────────────────────────────────────");
-                        Console.WriteLine($"  PDF:      {filename} ({bytes.Length} bytes)");
-                        var text = _pdf.Extract(bytes, filename);
-                        var pdfPreview = text.Length > 1000 ? text[..1000] + "..." : text;
-                        Console.WriteLine(pdfPreview);
-                    }
-                }
+                    WriteIndented = true,
+                });
+                Console.WriteLine(pretty);
             }
 
-            _logger.LogInformation("Day 2 happy path complete. Shutting down.");
+            _logger.LogInformation("Day 3 happy path complete. Shutting down.");
         }
         catch (Exception ex)
         {
