@@ -78,6 +78,7 @@ public class BillExtractor
             _logger.LogError(ex, "Gemini returned invalid JSON: {Json}", json);
             // Return a low-confidence "other" rather than crash — Day 11 will route this to needs_review.
             return new BillExtraction("other", null, null, null, null, null, null, null,
+                RelatedReferences: Array.Empty<string>(),
                 Confidence: 0.0,
                 Reasoning: $"Failed to parse model response as JSON: {ex.Message}");
         }
@@ -147,13 +148,25 @@ public class BillExtractor
           "dueDate": "2025-06-30",           // ISO 8601, null for confirmations
           "paidDate": "2025-05-28",          // ISO 8601, null for invoices
           "period": "2025-05",               // YYYY-MM if you can determine it
-          "reference": "...",                // invoice/transaction number
+          "reference": "...",                // PRIMARY identifier — see "Reference selection" below
+          "relatedReferences": ["...","..."],// ALL OTHER identifiers you saw — bank tx IDs, customer codes, merchant refs
           "confidence": 0.0,                 // your self-assessed confidence 0.0 – 1.0
           "reasoning": "..."                 // one sentence in English: why you classified/extracted this way
         }
 
+        Reference selection (IMPORTANT):
+        - Confirmation emails often contain TWO identifiers: the bank/processor's transaction ID
+          (e.g. "NLB-WEB-...-69f8b319..."), AND the invoice number being paid (e.g. "04-2026-АГ7262-0").
+        - `reference` should be the identifier MOST LIKELY to also appear on the matching invoice —
+          which is the INVOICE NUMBER, not the bank transaction ID.
+        - Put bank transaction codes, merchant refs, customer codes etc. in `relatedReferences`.
+        - For invoices, `reference` is straightforwardly the invoice number; `relatedReferences`
+          carries any account/customer/contract numbers also shown.
+        - If you cannot identify which token is the invoice number, set `reference` to your best
+          guess and put everything else in `relatedReferences` — lower your confidence accordingly.
+
         Rules:
-        - If you cannot determine a field, set it to null. Do NOT invent values.
+        - If you cannot determine a field, set it to null (or [] for relatedReferences). Do NOT invent values.
         - Confidence below 0.7 means the system will flag for human review — be honest.
         - "other" is a valid kind for emails that are neither invoices nor confirmations
           (newsletters, account statements, promotions, etc.).

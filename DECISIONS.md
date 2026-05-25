@@ -268,3 +268,53 @@ This is direct empirical evidence for two architectural claims:
 Day 3 hit a 429 that retries couldn't clear. Direct curl against `generativelanguage.googleapis.com` revealed `limit: 0, model: gemini-2.0-flash` — i.e., the *free-tier quota for that model is zero*, not exhausted. The SDK exception ("429 Too Many Requests") was technically correct but practically misleading; the underlying HTTP response carried the precise diagnostic ("quotaId" with explicit limit value) that the SDK never surfaced.
 
 **Engineering pattern worth one paragraph in the paper's "Operational Lessons" section:** when an SDK gives an inscrutable error, hit the underlying HTTP endpoint directly with curl. APIs designed for direct use tend to return rich diagnostic JSON; SDKs often discard those details when mapping responses to exceptions. The fix here (switching to `gemini-2.5-flash`, the current free-tier model after Google moved the default in mid-2025) took 30 seconds once the actual cause was visible.
+
+### Semantic field normalization (Reference vs transaction number vs invoice number)
+
+Different vendors use different terminology for what is functionally the same field — *the unique identifier of this document*. Observed in real data:
+
+- Kolektorski (water): invoice carries `Фактура број`; confirmation carries a long alphanumeric transaction code (`25165KcYBAmoesm9996`).
+- Telekabel: invoice carries an invoice number (`04-2026-АГ7262-0`); confirmation email carries *both* a bank transaction ID (`NLB-WEB-...-69f8b319...`) and the same invoice number being paid.
+
+Agent A's system prompt defines a single output field `Reference` semantically ("the identifier of this document"), and Agent A maps each vendor's terminology onto it without a per-vendor lookup table. This is **semantic field normalization**: the LLM understands *meaning*, so the agent's output schema can be vendor-agnostic where a rule-based pipeline would need a manually-maintained dictionary per vendor and per language.
+
+A regex-based extractor handling these three vendors would need at least three separate patterns; adding a fourth vendor would require a code change. The LLM-based extractor generalizes to new vendors at *zero* code cost — only the prompt's general guidance about "identifier semantics" needs to be sound. This is a defensible thesis bullet for the "advantages over rule-based extraction" section.
+
+### LLM non-determinism observed in the wild (and the schema fix)
+
+Two consecutive runs of Agent A on the *same* Telekabel confirmation email returned different `Reference` values:
+
+- Run 1: `04-2026-АГ7262-0` (the invoice number being paid — useful for reconciliation)
+- Run 2: `NLB-WEB-АГ7262-20260504-69f8b319ec763` (the bank's transaction ID — useless for invoice matching)
+
+Both are *correct* answers to the literal question "what is the reference number in this email" — the confirmation contains both identifiers, and at temperature 0.1 the model still occasionally picks the bank's ID over the invoice number. This is the canonical kind of LLM-output instability under ambiguous inputs.
+
+**Architectural fix (not a prompt-tuning hack):**
+1. Extended `BillExtraction` with a `RelatedReferences: string[]` field for all secondary identifiers.
+2. Updated the prompt to explicitly disambiguate: `reference` is the identifier most likely to also appear on the matching counterpart document (the invoice number); `relatedReferences` carries the rest.
+3. Agent B's reconciliation (Day 7) does not rely on `Reference` as a strict match key. Instead it reasons over the tuple `(vendor, period, amount)` as the primary signal, with `Reference` and `RelatedReferences` as additional evidence the model can use to break ties.
+
+**Why this is the right pattern, defensible at viva:**
+
+> "Reference equality is fragile because vendors include multiple identifier tokens in their emails and LLM extraction is non-deterministic about which one is primary. Rather than chase prompt engineering, the architecture treats reconciliation as a decision under uncertainty: Agent B receives the full set of extracted identifiers and reasons about which counterpart bill best matches, given vendor + period + amount + any reference overlap. This is precisely where agentic behavior earns its name — a rule-based pipeline would either reject ambiguous matches or false-positive on transaction-ID collisions; the agent makes a graded judgement and either acts or flags for review."
+
+This finding emerged from real data — it could not have been discovered from synthetic test fixtures. Worth one paragraph in the thesis's "Methodology / Implementation Insights" section.
+
+### Polling vs. webhooks: idempotent polling for v1
+
+Each `dotnet run` currently re-processes every labeled email — fine for development, wasteful at runtime. Three tiers of solution:
+
+1. **Idempotent polling (v1, Day 9 in PLAN.md).** Store every processed `gmail_message_id` in the `email_log` table. On each poll, fetch the label's message-ID list (cheap, ~1 Gmail API call), skip IDs we've already processed. Gemini is only invoked on *new* messages. At thesis scale (a few new bills per week per user), this is effectively as efficient as webhooks.
+2. **Gmail Pub/Sub push (future work).** Use Gmail's `users.watch()` API to subscribe to label changes; Google pushes notifications to a Google Cloud Pub/Sub topic; the application receives them via an HTTPS endpoint. Truly event-driven, near-zero latency.
+3. **ngrok-tunneled webhook (dev-only).** Stand up a public URL for the laptop via ngrok or Cloudflare Tunnel for development.
+
+**Chosen for v1: tier 1.** Reasoning:
+
+- Operationally indistinguishable from webhooks at thesis scale and user-facing latency.
+- No public HTTPS endpoint required, no Pub/Sub setup, no JWT verification, no 7-day watch-renewal logic.
+- Consistent with the existing "local laptop demo" decision — adding deployment-grade infrastructure for v1 would contradict that scope choice.
+- The architecture does not preclude Pub/Sub: the polling worker can be swapped for a webhook handler that calls the same downstream code (Agent A → DB → Agent B → notifications) — *only the ingestion trigger changes*. Same separation-of-concerns reasoning as the `IBillSource` discussion: the agent layer is invariant under input-source changes.
+
+**Future-work paragraph (paste-ready for paper):**
+
+> "v1 uses periodic polling with idempotency on Gmail message IDs as the trigger for the ingestion pipeline. The same architecture supports event-driven ingestion via Gmail's Pub/Sub push notifications: the watch-and-push primitives publish to a Cloud Pub/Sub topic which a webhook endpoint can consume, invoking the existing Agent A → Agent B pipeline unchanged. The migration requires no changes to the agent layer; only the trigger upstream of ingestion is replaced. This separation is enabled by the deliberate architectural choice to keep the agent code independent of the input-source plumbing."

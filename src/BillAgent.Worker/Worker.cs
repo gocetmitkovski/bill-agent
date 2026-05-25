@@ -66,6 +66,8 @@ public class Worker : BackgroundService
                 var pretty = JsonSerializer.Serialize(extraction, new JsonSerializerOptions
                 {
                     WriteIndented = true,
+                    // Don't \uXXXX-escape Cyrillic / non-ASCII — keep console output human-readable.
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
                 });
                 Console.WriteLine(pretty);
             }

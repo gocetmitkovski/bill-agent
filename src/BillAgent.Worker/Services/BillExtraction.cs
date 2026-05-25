@@ -29,8 +29,22 @@ public record BillExtraction(
     /// <summary>The billing period this covers, e.g. "2025-05" or "May 2025".</summary>
     string? Period,
 
-    /// <summary>Invoice / reference / transaction number — anything the vendor uses to identify this document.</summary>
+    /// <summary>
+    /// The single identifier most likely to appear on the *matching counterpart* document.
+    /// For an INVOICE this is the invoice number (e.g. "25051450182", "04-2026-АГ7262-0").
+    /// For a CONFIRMATION this should be the same invoice number IF the email mentions which
+    /// invoice it paid; if the email only carries a bank transaction code, put that here.
+    /// Picking the right primary reference is part of Agent A's reasoning, not a string match.
+    /// </summary>
     string? Reference,
+
+    /// <summary>
+    /// All *other* identifiers Agent A noticed in the document — bank transaction IDs,
+    /// merchant reference codes, customer numbers, internal IDs, etc.
+    /// Agent B's reconciliation can search across these when the primary Reference doesn't match.
+    /// Empty array if no additional identifiers were seen.
+    /// </summary>
+    string[] RelatedReferences,
 
     /// <summary>0.0 – 1.0. Agent A's self-assessed confidence in the extraction. Below 0.7 → Agent B flags for review.</summary>
     double Confidence,
