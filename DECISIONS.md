@@ -121,3 +121,25 @@ This maps onto a classic three-role agent taxonomy: *perception → action → r
 
 ### Multilingual generalization as a paper bullet
 Subject lines and body content are in Macedonian. Gemini handles this natively without translation, and the agent design uses zero hardcoded keywords. A rule-based pipeline would require a per-language keyword list per vendor; the LLM generalizes across languages by construction. Worth one bullet in the "advantages over rule-based extraction" section.
+
+### Design for extension, defer abstraction (ingestion source)
+
+Considered building an `IBillSource` interface up front so the system could ingest from IMAP / Outlook Graph / shared drive folders / manual upload in addition to Gmail. Deliberately *not* doing this for v1.
+
+**Reasoning:**
+- Speculative generality is a documented refactoring anti-pattern (Fowler, *Refactoring*, ch. "Bad Smells in Code"). One concrete provider gives no signal on what the right abstraction looks like — an interface designed in the dark will almost certainly be wrong by the time a second source appears.
+- Rule of Three: abstract from concrete usage patterns across at least three implementations, not from imagination. With only Gmail today, the cost (extra code, false constraints, defending an unused interface during the viva) outweighs the benefit.
+- Two-week timeline doesn't tolerate yak-shaving that's unjustified by the v1 scope.
+
+**Why the deferral is cheap (architecture already supports it):**
+- `EmailContent` record is provider-neutral by construction — no Gmail-specific fields, just Subject/From/Date/Snippet/BodyPlain/BodyHtml.
+- `PdfTextExtractor` consumes `byte[]`, not Gmail's `Message` type. Already source-agnostic.
+- Gmail coupling is surgically isolated to a single class (`GmailReader`) with one method per concern (list / fetch / attachments).
+- Agent A consumes `EmailContent` only and is wholly unaware of the ingestion source — when a second source is added, the agent layer needs zero changes.
+
+**Future-work framing for the paper:**
+- "Pluggable ingestion source" as v2: extract `IBillSource` from concrete usage patterns once 2+ providers are implemented.
+- Plausible alternative sources: IMAP for arbitrary providers, Microsoft Graph for Outlook/Exchange, a watched directory for manual PDF drops, a webhook endpoint for vendors that push.
+- The *agent layer's invariance* under ingestion-source changes is itself a defensible architectural property — it demonstrates that the agentic logic is genuinely decoupled from input plumbing.
+
+**Defense talking point:** "I designed for extension but deliberately did not abstract until a second concrete case existed, following the Rule of Three. The provider-neutral shapes (`EmailContent`, `byte[]`) and the surgical isolation of Gmail coupling mean adding a second source is a mechanical refactor, not a redesign."
