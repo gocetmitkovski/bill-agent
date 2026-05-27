@@ -1,0 +1,44 @@
+# Local Postgres for bill-agent.
+#
+# Why local (not Supabase): the thesis demo runs offline on the defense laptop.
+# Managed Postgres adds a network dependency we don't want in front of the committee
+# (Supabase free tier pauses idle projects; even a 30s wake-up kills the demo flow).
+# The schema is standard SQL — porting to any managed Postgres is a connection-string change.
+#
+# Usage:
+#   docker compose up -d        # start
+#   docker compose down         # stop (volume preserved)
+#   docker compose down -v      # NUKE everything (fresh schema next start)
+#
+# Connection: postgres://billagent:billagent@localhost:5432/billagent
+#
+# The init SQL in db/migrations/ is mounted into /docker-entrypoint-initdb.d
+# and executed automatically on FIRST container start (empty volume).
+# If you change the schema after that, either:
+#   (a) docker compose down -v   (drops the volume, re-runs init)
+#   (b) apply the new .sql by hand:
+#       docker compose exec -T postgres psql -U billagent -d billagent < db/migrations/000X_xxx.sql
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: billagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: billagent
+      POSTGRES_PASSWORD: billagent
+      POSTGRES_DB: billagent
+    ports:
+      # Bind to 127.0.0.1 only — no LAN exposure during demo
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - billagent_pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billagent -d billagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  billagent_pgdata:
