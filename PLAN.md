@@ -32,17 +32,26 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] Try it on one real bill, print JSON
   - [x] Commit: "feat: llm field extraction"
 
-- [ ] **Day 4 — Database**
-  - [ ] Supabase schema: `bills`, `payments`, `email_log` (see DECISIONS.md)
-  - [ ] EF Core or Npgsql wired up
-  - [ ] Write extracted bill to `bills` table
-  - [ ] Commit: "feat: persist bills to postgres"
+- [x] **Day 4 — Database** *(local Postgres 17 in Docker — see DECISIONS.md for the Supabase pivot)*
+  - [x] `docker compose up -d` → Postgres 17 running on localhost:5432
+  - [x] `db/migrations/0001_init.sql` applied automatically via docker-entrypoint-initdb.d
+  - [x] Verify schema: `docker compose exec postgres psql -U billagent -d billagent -c "\dt"`
+  - [x] EF Core 9 + Npgsql provider wired in `Program.cs`
+  - [x] BillRepository: HasProcessedAsync (idempotency precheck) + PersistAsync (transactional write)
+  - [x] `dotnet run` once → see rows in `email_log`, `bills`, `payments`
+  - [x] `dotnet run` AGAIN → all messages skipped (idempotency verified)
+  - [x] Commit: "feat: persist bills to local postgres via EF Core (Day 4)"
 
-- [ ] **Day 5 — Sheet output** 🎉 *end-of-week-1 milestone*
-  - [ ] Google Sheets API OAuth
-  - [ ] Append new bill row to a target spreadsheet
-  - [ ] **MILESTONE: forward a bill → see new sheet row**
-  - [ ] Commit: "feat: sheet sync on new bill"
+- [x] **Day 5 — Sheet output** 🎉 *end-of-week-1 milestone*
+  - [x] In Google Cloud Console, enable the Sheets API for the existing project
+  - [x] Create a fresh Google Sheet (any name); rename Tab 1 to **Bills**
+  - [x] Copy the spreadsheet id from its URL → add `BILLAGENT_SHEET_ID=...` to `.env`
+  - [x] `dotnet run` → second OAuth browser screen (Sheets scope this time)
+  - [x] Verify header row appears in row 1 of "Bills" tab
+  - [x] Verify new invoice rows appear (the two from your test inbox)
+  - [x] `dotnet run` AGAIN → idempotency holds, sheet does NOT grow (precheck stops at email_log)
+  - [x] **MILESTONE: forward a bill → see new sheet row**
+  - [x] Commit: "feat: sheets append on new invoice (Day 5)"
 
 ## Week 2 — agent loop, reconciliation, polish
 

@@ -318,3 +318,109 @@ Each `dotnet run` currently re-processes every labeled email — fine for develo
 **Future-work paragraph (paste-ready for paper):**
 
 > "v1 uses periodic polling with idempotency on Gmail message IDs as the trigger for the ingestion pipeline. The same architecture supports event-driven ingestion via Gmail's Pub/Sub push notifications: the watch-and-push primitives publish to a Cloud Pub/Sub topic which a webhook endpoint can consume, invoking the existing Agent A → Agent B pipeline unchanged. The migration requires no changes to the agent layer; only the trigger upstream of ingestion is replaced. This separation is enabled by the deliberate architectural choice to keep the agent code independent of the input-source plumbing."
+
+---
+
+## 2026-05-26 — Persistence layer: local Dockerized Postgres, EF Core, hand-written schema
+
+### Pivot from Supabase to local Postgres 17 in Docker
+
+The earlier plan named Supabase as the persistence backend. That choice has been reversed in favour of a Postgres 17 container running on the defense laptop, for three reasons.
+
+First, the thesis demonstration is performed locally during the defense. A managed Postgres service introduces a network dependency between the laptop and the demonstration outcome — and the free tier of Supabase suspends idle projects after a period of inactivity, requiring a wake-up handshake of up to thirty seconds. A demonstration that can stall on cold-start latency in front of a committee is a demonstration with avoidable risk.
+
+Second, the schema itself is portable. Both engines speak standard PostgreSQL, the migration script in `db/migrations/0001_init.sql` is dialect-neutral SQL, and redeploying to a managed Postgres (Supabase, Neon, or AWS RDS) reduces to changing one connection string. The local choice does not foreclose a hosted deployment; it simply postpones it past the defense.
+
+Third, the local choice keeps the system reproducible. A future reader who clones the repository can run `docker compose up -d`, apply the init script automatically through Docker's `docker-entrypoint-initdb.d` mechanism, and have a working database in seconds. There is no external account, no API key, and no opaque platform configuration to mirror — the database, like the source code, is fully described by the repository.
+
+### ORM choice: Entity Framework Core 9 (Npgsql provider), schema authored by hand
+
+The ORM is Entity Framework Core 9 with the Npgsql provider. The DbContext maps onto a hand-written SQL migration file (`db/migrations/0001_init.sql`) rather than onto generated `dotnet ef migrations`. This is a deliberate inversion of EF Core's usual code-first workflow.
+
+The reasoning is twofold. The first reason concerns thesis defensibility: a hand-written DDL script can be read aloud line-by-line during the defense, and the integrity constraints — the `UNIQUE` index on `gmail_message_id`, the `CHECK` constraint on `bills.status`, the JSONB columns for `related_references` — are visibly the author's design decisions rather than artifacts of a code generator. A committee question of the form "why is this column constrained this way?" admits a direct answer.
+
+The second reason concerns operational simplicity: for a three-table schema there is no benefit to the migration-snapshot machinery EF Core layers on top of generated migrations. The cost of maintaining `__EFMigrationsHistory` and the model snapshot files exceeds the value they provide at this scale. EF Core is retained for what it does well — typed LINQ queries against entity classes, value converters for the JSONB columns, transaction management — without paying for what it does badly at small scale.
+
+### Idempotency, in detail
+
+The system polls Gmail every five minutes (Day 9). Idempotency is therefore not optional; it is the contract that makes polling safe. Three mechanisms enforce it in layers, from cheap to authoritative:
+
+1. **Application-level precheck.** Before invoking the LLM for a Gmail message id, the worker queries `email_log` for that id. If present, the message is skipped — saving an LLM call and ensuring deterministic re-runs across worker restarts.
+
+2. **Database-level uniqueness.** The columns `email_log.gmail_message_id`, `bills.gmail_message_id`, and `payments.gmail_message_id` each carry a `UNIQUE` constraint. If a concurrent worker iteration races past the precheck, the second `INSERT` raises Postgres SQLSTATE `23505` (unique violation). The repository catches that specific error and treats it as a no-op.
+
+3. **Transactional grouping.** All three writes for a given message (the `email_log` row plus a `bills` or `payments` row when applicable) occur in a single EF transaction. The system never observes a `bills` row without its corresponding `email_log` row.
+
+The layered design follows the standard "optimistic precheck, pessimistic database constraint" pattern. The precheck is the happy path; the constraint is the safety net.
+
+### `email_log` as audit trail, not derived data
+
+The schema contains a deliberate redundancy: every processed email — even those classified as `"other"` by Agent A — produces a row in `email_log`, with the full extraction record stored as JSONB in `raw_extraction`. This duplicates information that already lives in `bills` and `payments` for messages that are also classified as invoices or confirmations.
+
+The duplication is intentional. `email_log` is the audit and replay surface: it answers the question "did the system see this email, and what did the LLM decide about it?" without consulting the downstream tables. During the defense this distinction matters — it lets the demonstration replay LLM decisions against the database after the fact, and it lets a future maintainer (or thesis reader) audit the system's behavior on edge-case messages that produced no business-domain row.
+
+---
+
+## 2026-05-26 — Sheets as derived view, not source of truth
+
+### The role of the Google Sheet in the architecture
+
+The system ships data to a Google Sheet as the user-facing surface — the place the author actually opens to see "what bills are outstanding this month, what did I pay, what's the yearly total." This is the same role the sheet plays in the manual workflow the system is replacing; preserving it lowers the change-management cost for the user, and gives the committee a tangible artifact to look at during the defense.
+
+A design question worth being explicit about: **what is the source of truth?** The answer is Postgres. The Google Sheet is a *derived projection* of the `bills` table, materialized at insert time and (from Day 8 onward) updated on status changes. The schema in `db/migrations/0001_init.sql` is the authoritative description of what the system knows; the sheet is the same data, rendered for a human reader.
+
+This distinction matters because it justifies the failure-handling choice. The append-to-sheet call sits *outside* the database transaction that writes `email_log` and `bills`. If the Sheets API call fails — network blip, quota exceeded, authentication expired — the bill is still safely persisted in Postgres and the error is logged. A future re-sync (manual today, scripted later) can rebuild the sheet from the database. The opposite arrangement — wrapping the sheet write inside the DB transaction — would be wrong: a transient Sheets failure should not block ingestion.
+
+### Future work: the outbox pattern
+
+A production system would not perform side effects (HTTP calls to Sheets, future Telegram pushes from Agent C) directly after a database commit. It would record the *intent* to perform that side effect in an outbox table inside the same transaction, and a background dispatcher would consume the outbox and execute the calls with retries. This decouples ingestion latency from third-party API latency and gives the system at-least-once delivery semantics for derived projections.
+
+For the thesis demonstration this pattern is overkill: ingestion runs every five minutes, the user reviews the sheet visually, and a missed row will be re-attempted on the next poll cycle once we extend the sync to also include "already-persisted bills missing from the sheet." The architecture admits the outbox upgrade as a future-work paragraph without requiring rework of the agent layer — the agents communicate through the database, which is exactly the boundary the outbox pattern would re-use.
+
+### Why OAuth scope is separated from Gmail's
+
+Gmail and Sheets use the same Google Cloud project and the same OAuth client credentials file. They do *not* share a token: each scope (Gmail readonly, Sheets read-write) gets its own refresh token, stored in a distinct on-disk directory (`secrets/token_store` vs `secrets/token_store_sheets`). The separation respects the principle of least privilege at the token level — a malicious read of one token directory does not grant the other capability — and it matches the OAuth consent UX the user has already seen, where each scope is presented in its own consent screen.
+
+---
+
+## 2026-05-26 — Where agents belong, and where they don't: the visualization boundary
+
+A design question surfaced near the end of Day 5: *should an agent manage the Google Sheet?* The intuition behind the question is correct and worth taking seriously. The thesis is about agentic systems; it would be odd if the sheet integration were a thirty-year-old pattern of typed HTTP calls from a deterministic service. The instinct to push more of the system into the agent layer is, in general, the right instinct for this thesis.
+
+But the instinct has limits, and the limits are the most defensible part of the architecture.
+
+### The failure mode of letting agents do layout
+
+If an LLM is given the authority to design and arrange the sheet — to choose columns, group rows, apply conditional formatting, lay out monthly and yearly aggregates — every run is a fresh design decision. The first run produces one layout; the second run, primed by a slightly different invoice, produces a marginally different one. Cells that the prior conditional-formatting rule pinned by range no longer fall under that rule. Pivot tables drift. The dashboard the author screenshots for the defense slides is not the dashboard the system produces during the live demonstration.
+
+This is not a hypothetical concern. It is the standard failure mode of agentic-everything architectures: the system works in nine demonstrations and falls over in the tenth because the non-determinism that makes the LLM useful in classification also makes it unreliable as a UI layout engine.
+
+The deeper point is conceptual. Layout and aggregation are not agentic tasks. They are spreadsheet tasks. Pivot tables and conditional formatting exist precisely because they are deterministic projections of a tabular source. Delegating them to an LLM is delegating a solved problem to a non-deterministic solver — a category error, not a stylistic one.
+
+### Two surfaces, one source
+
+The architecture adopted here resolves the tension by separating the surfaces. The system writes to a single, normalized tab named `Bills`: ten columns, one row per invoice, append-only, deterministic, populated by `SheetsWriter` after every successful database commit. This is the projected audit log. It is visually boring on purpose; it never rearranges; every row is traceable to a Gmail message id.
+
+The human-facing dashboard — monthly and yearly totals per vendor, paid-versus-unpaid coloring, grouped averages, running aggregates — lives on a separate tab built once, by hand, in Google Sheets. It consists entirely of standard spreadsheet primitives: `SUMIFS` for grouped totals, `AVERAGEIFS` for per-vendor averages, a conditional-formatting rule keyed on the `Status` column that paints rows green for `paid`, yellow for `needs_review`, and leaves `pending` unstyled. The system never touches this tab. It refreshes automatically because its formulas reference the `Bills` tab the system *does* write.
+
+The committee question "how does the dashboard stay current?" has a one-sentence answer: "The agent populates a normalized base table; the visualization is standard spreadsheet formulas referencing that table." The committee question "what happens if the layout drifts?" has the same answer: it cannot, because the system does not produce the layout.
+
+### Where the agents legitimately use tools
+
+The architectural restraint argued for here is not that agents should avoid tools. It is that agents should use tools in the places where reasoning is the bottleneck, and stay out of the places where determinism is the requirement.
+
+Agent B, the reconciler (Day 7), is given a `mark_bill_paid` tool. When it concludes — by reasoning over vendor, period, amount, and reference strings — that a payment matches a bill, it invokes that tool, which performs two side effects: it updates the `bills.status` column in Postgres, and it updates the corresponding `Status` cell in the `Bills` tab. The agent's job is the reasoning that *decides* the match; the tool's job is the deterministic write that *executes* the match. This is the textbook division of labor in agentic systems, and it produces a demonstrable, defensible artifact: a single status cell flips, the conditional formatting rule paints it green, and the committee sees an agent's reasoning translated into a visible state change.
+
+Agent C, the conversational interface (Day 10, Telegram), is given query tools: `query_yearly_total(vendor, year)`, `query_unpaid_bills()`, `query_monthly_summary(month)`. These tools read from Postgres, not from the sheet, because the questions they answer ("what is my yearly total for vendor X") are database questions expressible as parameterized SQL. Reading from the sheet to answer them would be reading from the *projection* when the *source* is available — the same category error as letting the agent lay out the projection in the first place, run in reverse.
+
+### What the thesis claims, and what it does not
+
+The contribution of an architecture like this one is not that agents do everything. It is that agents are deployed precisely where reasoning is the differentiator — classification of unstructured email, reconciliation across noisy identifiers, conversational query over heterogeneous data — and that the rest of the system remains deterministic plumbing. The literature contains many agentic-everything systems; the contribution of this one is the discipline of the boundary.
+
+Stated as a paragraph for the paper:
+
+> "The system deploys language models in three roles — extraction, reconciliation, and conversational query — each backed by a narrow tool surface that performs deterministic side effects on a normalized database. Visualization, layout, and aggregation are delegated to the spreadsheet's native formula and conditional-formatting capabilities operating on that database's projection. This separation prevents the non-determinism of agent reasoning from leaking into the user-facing surfaces of the system, while preserving the agentic character of every task where reasoning, rather than computation, is the bottleneck."
+
+### A note on MCP
+
+The question of whether to expose the sheet through the Model Context Protocol was raised and deferred. MCP is well-suited to connecting general-purpose agents (such as Claude Desktop) to external tools they could not otherwise reach. For a closed system where the author controls both the agent and the tool — as is the case here — MCP would introduce an indirection layer whose value is not realized within the bounded scope of the demonstration. The thesis records MCP as a deployment path for future work: the same `mark_bill_paid` and query tools could be exposed as an MCP server, enabling generic agentic clients to drive the system without modification to its core.

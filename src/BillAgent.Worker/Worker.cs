@@ -12,6 +12,8 @@ public class Worker : BackgroundService
     private readonly GmailReader _gmail;
     private readonly PdfTextExtractor _pdf;
     private readonly BillExtractor _extractor;
+    private readonly BillRepository _repo;
+    private readonly SheetsWriter _sheets;
     private readonly IHostApplicationLifetime _lifetime;
 
     public Worker(
@@ -19,12 +21,16 @@ public class Worker : BackgroundService
         GmailReader gmail,
         PdfTextExtractor pdf,
         BillExtractor extractor,
+        BillRepository repo,
+        SheetsWriter sheets,
         IHostApplicationLifetime lifetime)
     {
         _logger = logger;
         _gmail = gmail;
         _pdf = pdf;
         _extractor = extractor;
+        _repo = repo;
+        _sheets = sheets;
         _lifetime = lifetime;
     }
 
@@ -35,12 +41,23 @@ public class Worker : BackgroundService
             _logger.LogInformation("Starting OAuth handshake with Gmail...");
             await _gmail.InitializeAsync(stoppingToken);
 
+            _logger.LogInformation("Starting OAuth handshake with Sheets...");
+            await _sheets.InitializeAsync(stoppingToken);
+
             _logger.LogInformation("Listing messages with label '{Label}'...", Label);
             var stubs = await _gmail.ListMessagesByLabelAsync(Label, MaxMessagesToList, stoppingToken);
             _logger.LogInformation("Found {Count} message(s).", stubs.Count);
 
             foreach (var stub in stubs)
             {
+                // Idempotency precheck — if we've already processed this Gmail message id,
+                // skip the LLM call entirely. (Saves Gemini quota AND ensures deterministic re-runs.)
+                if (await _repo.HasProcessedAsync(stub.Id, stoppingToken))
+                {
+                    _logger.LogInformation("Skipping {Id}: already in email_log.", stub.Id);
+                    continue;
+                }
+
                 var full = await _gmail.GetMessageAsync(stub.Id, stoppingToken);
                 var content = GmailReader.ExtractContent(full);
 
@@ -70,9 +87,29 @@ public class Worker : BackgroundService
                     Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
                 });
                 Console.WriteLine(pretty);
+
+                // Persist: email_log row always; bills/payments depending on kind.
+                // Returns the inserted Bill (if any) for downstream Sheets sync.
+                var inserted = await _repo.PersistAsync(stub.Id, content.Subject, content.From, extraction, stoppingToken);
+                Console.WriteLine("──────────  persisted  ──────────");
+
+                // Sheet sync runs OUTSIDE the DB transaction. Postgres is the source of truth;
+                // the sheet is a derived view. If this throws, the bill is still safely in the DB
+                // and can be re-synced manually. (See DECISIONS.md — outbox pattern is future work.)
+                if (inserted is not null)
+                {
+                    try
+                    {
+                        await _sheets.AppendBillAsync(inserted, stoppingToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Sheets append failed for {Id} — DB row is intact; manual re-sync required.", stub.Id);
+                    }
+                }
             }
 
-            _logger.LogInformation("Day 3 happy path complete. Shutting down.");
+            _logger.LogInformation("Day 5 happy path complete. Shutting down.");
         }
         catch (Exception ex)
         {
