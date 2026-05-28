@@ -35,17 +35,20 @@ public class ReconcilerAgent
     private readonly ILogger<ReconcilerAgent> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IServiceProvider _services;
+    private readonly SheetsWriter _sheets;
     private readonly string _apiKey;
 
     public ReconcilerAgent(
         ILogger<ReconcilerAgent> logger,
         ILoggerFactory loggerFactory,
         IServiceProvider services,
+        SheetsWriter sheets,
         IConfiguration config)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _services = services;
+        _sheets = sheets;
         _apiKey = config["GEMINI_API_KEY"]
             ?? throw new InvalidOperationException("GEMINI_API_KEY missing.");
     }
@@ -140,6 +143,30 @@ public class ReconcilerAgent
                 "Reconciler did not record an outcome for payment {Id} — treating as unmatched.", paymentId);
             return ReconcilerOutcome.Unmatched("agent finished without calling a terminal tool");
         }
+
+        // ── Project outcome to the Sheet ─────────────────────────────────────
+        // Agent decides; system projects. Sheets is a derived view of Postgres
+        // (Day 5 design); we update the Status cell of the affected bill row
+        // OUTSIDE the agent's tool surface so the four narrow tools stay narrow.
+        // Failure here logs and continues — Postgres is the source of truth.
+        if (toolset.Outcome.BillId is Guid billId)
+        {
+            try
+            {
+                var bill = await db.Bills
+                    .Where(b => b.Id == billId)
+                    .Select(b => new { b.GmailMessageId, b.Status })
+                    .FirstOrDefaultAsync(ct);
+                if (bill is not null)
+                    await _sheets.UpdateBillStatusAsync(bill.GmailMessageId, bill.Status, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Sheet status update failed for bill {BillId}; DB row is authoritative.", billId);
+            }
+        }
+
         return toolset.Outcome;
     }
 

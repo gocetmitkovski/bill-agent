@@ -516,3 +516,25 @@ The defense-in-depth confidence threshold in `MarkBillPaidAsync` (0.85 in C#, mi
 ### Why this matters in the defense
 
 This first-run validation is the demonstration paragraph for the agentic-systems chapter of the thesis. The committee can be shown three artifacts in sequence: the prompt (the spec, in natural language); the agent's reasoning string (the justification, in the same vocabulary as the spec); the database row (the resulting state mutation). Each artifact is human-readable. Each one corresponds to a step the model took. The fact that the vocabulary chains across all three — "semantic match" appears in the spec and in the reasoning, the state mutation reflects the decision the reasoning explains — is what distinguishes a defensible agentic system from a black-box LLM call wrapped in plumbing.
+
+---
+
+## 2026-05-27 — Sheet upsert on status change (Day 8): why this is not a fifth tool
+
+A natural reflex when extending the Reconciler — and the one that came up first — would have been to give Agent B a fifth tool called `update_sheet_status`. The argument for it is symmetric and superficially clean: the agent decides the status, so the agent should write the status to every surface that displays it. The argument was rejected.
+
+The reason is a direct application of the architectural-restraint claim recorded earlier in this document. The thesis position is that agents are deployed where reasoning is the bottleneck, and stay out of the places where determinism is the requirement. *Deciding* whether a payment pays a bill is reasoning. *Updating a cell in a spreadsheet given a known bill id and a known new status* is not — it is a deterministic function of two values. The four-tool surface defended in the earlier entry would have grown to five for no reasoning gain, and the narrowness claim — already a defense talking point — would have been weakened by accommodation.
+
+The chosen alternative keeps the surface at four. The `ReconcilerAgent` orchestrator, after the agent's chat loop completes and one of the three terminal tools has recorded an outcome, inspects `toolset.Outcome.BillId`. If a bill id is present (matched or ambiguous outcomes), the orchestrator fetches that bill's `gmail_message_id` and current `status` from Postgres and calls `SheetsWriter.UpdateBillStatusAsync` itself, in deterministic .NET code, outside the agent's view. The agent does not know the sheet exists; it does not have to know.
+
+This is the same pattern Day 5 already established for `AppendBillAsync`: the agent extracts the bill, the system projects the bill to the sheet, and the projection is decoupled from the reasoning that produced the bill. Day 8 extends the same pattern from the insert case (Agent A) to the update case (Agent B). Failure of the sheet update is logged and tolerated, because Postgres is the source of truth and the sheet can be re-synced from it on the next run if it falls out of step. The narrative the committee hears, end-to-end, is consistent: agents reason; the system projects; the database is canonical; the sheet is a view.
+
+### Implementation: read column J, write column G
+
+The update is implemented as a two-call sequence against the Sheets API. The first call reads column J of the `Bills` tab (the `Gmail Msg Id` column added to the header on Day 5) and the orchestrator scans it for the message id of the bill whose status changed. The second call writes the new status into column G of the matched row. Two round-trips per update is acceptable at reconciliation throughput, which is bounded by the rate of incoming payment confirmations — measured in single digits per day on the test inbox.
+
+For a higher-volume deployment the right move is batched: read the full J column once at sweep start, accumulate `(row, status)` pairs as outcomes are recorded, and write them with a single `BatchUpdate` call at sweep end. The current implementation does not do this because the demonstration scale does not require it, and a batched implementation would obscure the read-modify-write logic that is easier to read in its current sequential form. The trade is recorded here so the thesis can cite the simpler implementation honestly without claiming it is the only one possible.
+
+### Visual consequence: the demo loop closes
+
+The user-facing consequence of this change is that the `Status` column in the `Bills` tab now reflects the agent's reconciliation decisions in real time. A conditional-formatting rule that the user maintains by hand on the `Status` column — `paid` → green, `needs_review` → yellow, `pending` → no formatting — produces the visual change the committee will see during the demonstration: an email arrives, a row appears in the sheet with status `pending`, the reconciler runs, the cell turns green. The full visible loop closes inside one execution of the worker process, on real data, without any code in the visualization path having opinions about layout or color.

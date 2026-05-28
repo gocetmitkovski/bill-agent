@@ -72,10 +72,14 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] `dotnet run` AGAIN → idempotency holds at email level AND sweep finds 0 unmatched
   - [x] Commit: "feat: reconciler agent w/ tool use (Day 7)"
 
-- [ ] **Day 8 — Sheet upsert**
-  - [ ] Find existing row by `bill_id`, update status cell
-  - [ ] Test paid bills turn green in sheet
-  - [ ] Commit: "feat: sheet upsert on status change"
+- [x] **Day 8 — Sheet upsert** *(orchestrator projects, agent stays at 4 tools — see DECISIONS.md)*
+  - [x] `SheetsWriter.UpdateBillStatusAsync` reads col J, writes col G
+  - [x] `ReconcilerAgent.ReconcileOneAsync` calls it after each terminal outcome (BillId present)
+  - [x] In Google Sheets, add conditional formatting: Status=paid → green, needs_review → yellow
+  - [x] `docker compose down -v && docker compose up -d` (fresh DB; Day 7 already painted current bills paid)
+  - [x] `dotnet run` → invoice rows appear pending, then Agent B flips them paid in the same run
+  - [x] Verify cells turn green via the conditional-formatting rule (no code involved in the colors)
+  - [x] Commit: "feat: sheet upsert on status change (Day 8)"
 
 - [ ] **Day 9 — Continuous loop**
   - [ ] `BackgroundService` polls Gmail every 5 min

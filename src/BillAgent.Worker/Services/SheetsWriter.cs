@@ -187,4 +187,59 @@ public class SheetsWriter
         _logger.LogInformation("Appended bill {Vendor} {Amount} {Currency} (msg={Id}) to sheet.",
             bill.Vendor, bill.Amount, bill.Currency, bill.GmailMessageId);
     }
+
+    /// <summary>
+    /// Updates the Status cell (column G) for the row whose Gmail Msg Id (column J) matches.
+    /// Called by ReconcilerAgent after a successful mark_bill_paid or flag_bill_needs_review.
+    ///
+    /// Implementation: read column J, find the row index, write column G of that row.
+    /// Two API calls per update — acceptable here because reconciliation throughput is low
+    /// (one call per matched payment, a few per sweep). For larger volumes the right move
+    /// would be batched: read J once, accumulate updates, write with BatchUpdate.
+    ///
+    /// Returns true if the row was found and updated, false otherwise (missing row is
+    /// logged but does NOT throw — Postgres is the source of truth; the sheet can be
+    /// re-synced manually if it falls out of step).
+    /// </summary>
+    public async Task<bool> UpdateBillStatusAsync(string gmailMessageId, string newStatus, CancellationToken ct)
+    {
+        if (_service is null) throw new InvalidOperationException("Call InitializeAsync first.");
+
+        // Read column J (Gmail Msg Id) from row 2 onward (row 1 is the header).
+        var jColumn = await _service.Spreadsheets.Values
+            .Get(_spreadsheetId, $"{_tab}!J2:J").ExecuteAsync(ct);
+
+        if (jColumn.Values is null)
+        {
+            _logger.LogWarning("Sheet '{Tab}' has no data rows; cannot update status for msg={Id}.", _tab, gmailMessageId);
+            return false;
+        }
+
+        // Find the 0-based offset within J2:J; add 2 (row 1 is header, J is 0-based) to get the sheet row number.
+        int rowIndex = -1;
+        for (int i = 0; i < jColumn.Values.Count; i++)
+        {
+            var cell = jColumn.Values[i];
+            if (cell.Count > 0 && string.Equals(cell[0]?.ToString(), gmailMessageId, StringComparison.Ordinal))
+            {
+                rowIndex = i + 2;  // +2: row 1 is header, plus the +1 to convert 0-based to 1-based.
+                break;
+            }
+        }
+
+        if (rowIndex < 0)
+        {
+            _logger.LogWarning("No sheet row found for gmail_message_id={Id}; status update skipped.", gmailMessageId);
+            return false;
+        }
+
+        // Status lives in column G. Update just that one cell.
+        var update = new ValueRange { Values = new List<IList<object>> { new List<object> { newStatus } } };
+        var req = _service.Spreadsheets.Values.Update(update, _spreadsheetId, $"{_tab}!G{rowIndex}");
+        req.ValueInputOption = SpreadsheetsResource.ValuesResource.UpdateRequest.ValueInputOptionEnum.RAW;
+        await req.ExecuteAsync(ct);
+
+        _logger.LogInformation("Updated sheet row {Row} status → '{Status}' (msg={Id}).", rowIndex, newStatus, gmailMessageId);
+        return true;
+    }
 }
