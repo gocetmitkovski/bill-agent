@@ -62,15 +62,15 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] `matched_bill_id` correctly left NULL pending Agent B (verified)
   - [x] Commit: "verify: Day 6 payment path already covered by Day 4/5 work" (or roll into Day 7 commit)
 
-- [ ] **Day 7 — Reconciler agent** *(the real "agentic" part — see DECISIONS.md "Agent B" entry)*
-  - [ ] `docker compose up -d` if not already running
-  - [ ] `dotnet run --project src/BillAgent.Worker` once
-  - [ ] Watch "Agent B — Reconciler sweep" section in console
-  - [ ] Expect: BOTH payments matched at confidence ≥ 0.85 (Телекабел and Колекторски both have exact amount + reference match in test data)
-  - [ ] Verify in DB: `SELECT vendor, status FROM bills;` → both should be 'paid'
-  - [ ] Verify in DB: `SELECT vendor, matched_bill_id FROM payments;` → both should have matched_bill_id set
-  - [ ] `dotnet run` AGAIN → idempotency holds at email level AND sweep finds 0 unmatched
-  - [ ] Commit: "feat: reconciler agent w/ tool use (Day 7)"
+- [x] **Day 7 — Reconciler agent** *(the real "agentic" part — see DECISIONS.md "Agent B" entry)*
+  - [x] `docker compose up -d` if not already running
+  - [x] `dotnet run --project src/BillAgent.Worker` once
+  - [x] Watch "Agent B — Reconciler sweep" section in console
+  - [x] Expect: BOTH payments matched at confidence ≥ 0.85 (Телекабел and Колекторски both have exact amount + reference match in test data)
+  - [x] Verify in DB: `SELECT vendor, status FROM bills;` → both should be 'paid'
+  - [x] Verify in DB: `SELECT vendor, matched_bill_id FROM payments;` → both should have matched_bill_id set
+  - [x] `dotnet run` AGAIN → idempotency holds at email level AND sweep finds 0 unmatched
+  - [x] Commit: "feat: reconciler agent w/ tool use (Day 7)"
 
 - [ ] **Day 8 — Sheet upsert**
   - [ ] Find existing row by `bill_id`, update status cell
