@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BillAgent.Worker.Services;
+using BillAgent.Worker.Services.Reconciler;
 
 namespace BillAgent.Worker;
 
@@ -14,6 +15,7 @@ public class Worker : BackgroundService
     private readonly BillExtractor _extractor;
     private readonly BillRepository _repo;
     private readonly SheetsWriter _sheets;
+    private readonly ReconcilerAgent _reconciler;
     private readonly IHostApplicationLifetime _lifetime;
 
     public Worker(
@@ -23,6 +25,7 @@ public class Worker : BackgroundService
         BillExtractor extractor,
         BillRepository repo,
         SheetsWriter sheets,
+        ReconcilerAgent reconciler,
         IHostApplicationLifetime lifetime)
     {
         _logger = logger;
@@ -31,6 +34,7 @@ public class Worker : BackgroundService
         _extractor = extractor;
         _repo = repo;
         _sheets = sheets;
+        _reconciler = reconciler;
         _lifetime = lifetime;
     }
 
@@ -109,7 +113,24 @@ public class Worker : BackgroundService
                 }
             }
 
-            _logger.LogInformation("Day 5 happy path complete. Shutting down.");
+            // ── Agent B sweep ────────────────────────────────────────────────
+            // After ingestion is done, run the reconciler over every unmatched payment.
+            // This is the "sweep mode" design choice from DECISIONS.md: Agent A reads
+            // email, Agent B reconciles, they communicate through the database.
+            Console.WriteLine();
+            Console.WriteLine("════════════════════════════════════════");
+            Console.WriteLine("  Agent B — Reconciler sweep");
+            Console.WriteLine("════════════════════════════════════════");
+            var sweepResults = await _reconciler.SweepAsync(stoppingToken);
+            foreach (var (paymentId, outcome) in sweepResults)
+            {
+                Console.WriteLine($"  payment={paymentId}  status={outcome.Status}" +
+                                  (outcome.BillId is null ? "" : $"  bill={outcome.BillId}") +
+                                  (outcome.Confidence is null ? "" : $"  conf={outcome.Confidence:0.00}"));
+                Console.WriteLine($"    reason: {outcome.Reasoning}");
+            }
+
+            _logger.LogInformation("Day 7 happy path complete. Shutting down.");
         }
         catch (Exception ex)
         {

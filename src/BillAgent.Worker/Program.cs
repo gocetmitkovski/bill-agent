@@ -1,6 +1,7 @@
 using BillAgent.Worker;
 using BillAgent.Worker.Data;
 using BillAgent.Worker.Services;
+using BillAgent.Worker.Services.Reconciler;
 using DotNetEnv;
 using Microsoft.EntityFrameworkCore;
 
@@ -28,6 +29,9 @@ builder.Services.AddSingleton<SheetsWriter>();
 // BillRepository is singleton too — it opens a DbContext scope per call internally,
 // which is the standard pattern for using EF from a singleton hosted service.
 builder.Services.AddSingleton<BillRepository>();
+// Agent B (the Reconciler). Singleton because it carries no per-request state;
+// each ReconcileOneAsync opens its own DbContext scope and builds a fresh Kernel.
+builder.Services.AddSingleton<ReconcilerAgent>();
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();

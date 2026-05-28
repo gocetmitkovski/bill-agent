@@ -55,16 +55,22 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
 
 ## Week 2 — agent loop, reconciliation, polish
 
-- [ ] **Day 6 — Payment confirmation path**
-  - [ ] Classifier returns `type: "confirmation"` for payment emails
-  - [ ] Extract payment fields (vendor, amount, paid_at)
-  - [ ] Store in `payments` table
-  - [ ] Commit: "feat: payment confirmation parsing"
+- [x] **Day 6 — Payment confirmation path** *(verified — Agent A + BillRepository already handle this end-to-end as of Day 5; no new code required)*
+  - [x] Classifier returns `type: "payment_confirmation"` for payment emails (Agent A — verified against 2 test emails)
+  - [x] Extract payment fields (vendor, amount, paid_at, references) (Agent A — verified)
+  - [x] Store in `payments` table (BillRepository.PersistAsync — verified)
+  - [x] `matched_bill_id` correctly left NULL pending Agent B (verified)
+  - [x] Commit: "verify: Day 6 payment path already covered by Day 4/5 work" (or roll into Day 7 commit)
 
-- [ ] **Day 7 — Reconciler agent** *(the real "agentic" part)*
-  - [ ] Semantic Kernel function with tools: `query_pending_bills`, `mark_bill_paid`, `flag_for_review`
-  - [ ] Given a payment, agent finds the matching pending bill and marks it paid
-  - [ ] Commit: "feat: reconciler agent w/ tool use"
+- [ ] **Day 7 — Reconciler agent** *(the real "agentic" part — see DECISIONS.md "Agent B" entry)*
+  - [ ] `docker compose up -d` if not already running
+  - [ ] `dotnet run --project src/BillAgent.Worker` once
+  - [ ] Watch "Agent B — Reconciler sweep" section in console
+  - [ ] Expect: BOTH payments matched at confidence ≥ 0.85 (Телекабел and Колекторски both have exact amount + reference match in test data)
+  - [ ] Verify in DB: `SELECT vendor, status FROM bills;` → both should be 'paid'
+  - [ ] Verify in DB: `SELECT vendor, matched_bill_id FROM payments;` → both should have matched_bill_id set
+  - [ ] `dotnet run` AGAIN → idempotency holds at email level AND sweep finds 0 unmatched
+  - [ ] Commit: "feat: reconciler agent w/ tool use (Day 7)"
 
 - [ ] **Day 8 — Sheet upsert**
   - [ ] Find existing row by `bill_id`, update status cell

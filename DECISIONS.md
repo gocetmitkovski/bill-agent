@@ -424,3 +424,53 @@ Stated as a paragraph for the paper:
 ### A note on MCP
 
 The question of whether to expose the sheet through the Model Context Protocol was raised and deferred. MCP is well-suited to connecting general-purpose agents (such as Claude Desktop) to external tools they could not otherwise reach. For a closed system where the author controls both the agent and the tool — as is the case here — MCP would introduce an indirection layer whose value is not realized within the bounded scope of the demonstration. The thesis records MCP as a deployment path for future work: the same `mark_bill_paid` and query tools could be exposed as an MCP server, enabling generic agentic clients to drive the system without modification to its core.
+
+---
+
+## 2026-05-27 — Agent B (the reconciler): tool surface and matching architecture
+
+This entry captures the design discussion that preceded Day 7 implementation. It is the architectural centerpiece of the thesis — the place where the system stops being an extraction pipeline and starts being an agentic one — and the choices made here are the choices most likely to come up in defense Q&A.
+
+### What Agent B is for
+
+Agent A converts an email into a structured record. That is a pure extraction problem: input is unstructured text and PDF, output is a typed object, the transformation has no opinion about what came before or what comes next. No tools, no state, no reasoning over the system's existing knowledge. It is a "function" in the most literal sense.
+
+Agent B is different in kind. Given a payment confirmation that just arrived, it must decide whether that payment settles a bill the system already knows about. The decision requires reading the existing state of the system (the set of pending bills), reasoning over identifiers that are noisy and inconsistent across the invoice/payment pair, and writing a state mutation if a match is found. This is the canonical shape of an agentic task: read state, reason, act. The same task expressed as deterministic SQL would require either an unrealistic assumption that vendor strings and reference codes match exactly between invoice and payment (they do not, as the test inbox demonstrates), or a hand-coded fuzzy-match heuristic specific to each utility company's quirks. The LLM is justified here because the variability is real and the rules cannot be written down in advance.
+
+### The tool surface: four narrow tools, not one broad one
+
+A coherent alternative would have been to give Agent B a single broad tool — "execute SQL against the bills table" — and let the model write its own queries. This is the path of maximum agentic freedom. It was rejected. Four narrow tools were chosen instead:
+
+`list_pending_bills_for(vendor, period, amountMin, amountMax)` retrieves up to ten candidate bills using a SQL filter that maps directly to the composite index `idx_bills_vendor_period_amount` created on Day 4. The vendor parameter is a case-insensitive substring (Postgres `ILIKE '%token%'`) so that the model can pass a distinctive core token rather than the full vendor name, accommodating the vendor-string variability observed in the test data.
+
+`mark_bill_paid(billId, confidence, reasoning)` is the success path: it mutates `bills.status` to paid and `payments.matched_bill_id` to the bill id, in a single EF SaveChanges. The `touch_updated_at` trigger fires automatically, so the Sheets projection (Day 8) will see the change on its next read.
+
+`flag_bill_needs_review(billId, confidence, reasoning)` is the ambiguous path: a candidate plausibly matches but the model cannot commit at the confidence threshold. The bill is flipped to `needs_review`; the payment's `matched_bill_id` is intentionally left NULL so that a human (or Agent C on Day 10) can complete the match.
+
+`flag_payment_unmatched(reasoning)` is the orphan path: no candidate bill plausibly matches. No DB mutation; the payment remains visible to Day 10's notification flow.
+
+The narrowness of this surface is itself a thesis claim. The retrieval tool encodes the matching heuristic at the SQL level (vendor substring + period + amount window), and the three terminal tools encode the decision taxonomy at the API level (matched / ambiguous / unmatched). The LLM reasons inside the space these tools define, but cannot reason *outside* it. A broader tool surface would have given the model more freedom and given the defense more questions to answer about what it does with that freedom. A narrower tool surface is easier to defend, easier to test, and produces a more predictable demonstration.
+
+### Tight retrieval, loose reasoning
+
+The matching architecture follows a pattern common in production agentic systems: the tool layer narrows the search space deterministically; the reasoning layer chooses from the narrowed set. SQL retrieves up to ten candidates matching vendor (substring), period (optional exact match), and amount (configurable window, typically ±1.00 currency unit). The model then reads the candidates and decides which (if any) matches the payment, using whatever signals are available — vendor semantic identity, period-vs-paid-date adjacency, exact amount, shared reference tokens.
+
+This pattern resolves the precision/recall tradeoff cleanly. A pure-SQL approach (vendor exact, period exact, amount exact) misses real matches because invoices and payment confirmations disagree on vendor strings ("ЈП Колекторски систем" vs "ЈП Колекторски систем - Скопје", from the test inbox) and on which reference token is treated as primary. A pure-LLM approach (model browses all pending bills) wastes tokens and produces more false positives. The hybrid — fuzzy SQL filter narrowed by indexed columns, semantic decision by the model — gets recall from the retrieval and precision from the reasoning.
+
+### Two-layer confidence: the agent decides, the system also decides
+
+The confidence threshold of 0.85 lives in two places that must agree. The system prompt instructs the model that confidence below 0.85 should be recorded via `flag_bill_needs_review` rather than `mark_bill_paid`. The C# implementation of `MarkBillPaidAsync` checks the threshold again and, if a low-confidence call comes through, automatically downgrades it to a `needs_review` outcome and logs the downgrade as a warning.
+
+The defense argument for the duplication is defense-in-depth. The model is told the rule and is expected to follow it; the runtime enforces the rule regardless. The duplication is not a vote of no confidence in the model — the warning log fires almost never in practice, because the model follows its instructions — but it eliminates a class of failure mode (an overconfident model mutating the database based on a weak match) without requiring trust in the model's calibration. When the committee asks "what stops the LLM from being wrong with high confidence?", the answer is: nothing stops it from being wrong, but the runtime stops it from acting on a confidence it did not earn.
+
+### Sweep mode, not per-payment ingestion-time reconciliation
+
+Agent B runs as a separate pass after ingestion finishes, not synchronously after each payment is persisted. The architecture is therefore: ingest all emails, persist all payments, then sweep over `WHERE matched_bill_id IS NULL` and reconcile each one in turn.
+
+The alternative — kicking Agent B inline as soon as a payment lands — would couple ingestion latency to reconciliation latency and make the demonstration harder to narrate. Sweep mode is easier to talk about ("the system reconciles periodically") and easier to demonstrate ("watch Agent B run alone on demand against existing data"). It also matches the temporal reality of the domain: payment confirmations and invoices can arrive in either order, with hours or days between them, so reconciliation should not be a same-message operation in the first place.
+
+### What the prompt encodes
+
+The matching heuristic is described in the system prompt in natural language, not in code. The choice is deliberate: the rules for matching are reasoning rules, not pattern-matching rules. They include things like "if the invoice period is N and paid_date falls in month N, N+1, or N+2, that is a normal payment timeline, not a no-signal." Encoding rules of this shape in code requires either committing to specific deterministic tolerances (which over-fit on the training data and break on the long tail) or writing a small DSL for fuzzy temporal predicates (which is over-engineering). The prompt is the spec, and the spec is reviewable by a human reader — the committee can read it during defense and form an opinion on whether the rules are reasonable.
+
+The prompt includes four worked examples drawn from the actual structure of test inbox data (two clean matches with different difficulty profiles, one ambiguous case, one no-candidates case). The examples are not synthetic; they describe the failure modes the system was designed to handle, made concrete with field-level detail. Their presence in the prompt is the only "training" the model receives for this task.
