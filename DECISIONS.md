@@ -474,3 +474,45 @@ The alternative — kicking Agent B inline as soon as a payment lands — would 
 The matching heuristic is described in the system prompt in natural language, not in code. The choice is deliberate: the rules for matching are reasoning rules, not pattern-matching rules. They include things like "if the invoice period is N and paid_date falls in month N, N+1, or N+2, that is a normal payment timeline, not a no-signal." Encoding rules of this shape in code requires either committing to specific deterministic tolerances (which over-fit on the training data and break on the long tail) or writing a small DSL for fuzzy temporal predicates (which is over-engineering). The prompt is the spec, and the spec is reviewable by a human reader — the committee can read it during defense and form an opinion on whether the rules are reasonable.
 
 The prompt includes four worked examples drawn from the actual structure of test inbox data (two clean matches with different difficulty profiles, one ambiguous case, one no-candidates case). The examples are not synthetic; they describe the failure modes the system was designed to handle, made concrete with field-level detail. Their presence in the prompt is the only "training" the model receives for this task.
+
+---
+
+## 2026-05-27 — First-run validation: the agent justified itself in its own rubric
+
+The Reconciler architecture was validated on first execution against the test inbox without modification. The result is worth recording in detail, because the form of the agent's output — not merely its correctness — is the thesis claim made visible.
+
+### The two test cases
+
+The test inbox contained two invoice/payment-confirmation pairs, deliberately chosen to exercise different difficulty profiles of the matching problem.
+
+The first pair was a Телекабел invoice for the 2026-04 period, amount 1406.00 MKD, invoice number `04-2026-АГ7262-0`, and the corresponding payment confirmation forwarded from an NLB bank notification, carrying the same invoice number verbatim in its reference field. This is the *easy* case: the vendor string is identical on both sides, the amount is exact, and the invoice number appears verbatim in both records. A naive deterministic matcher would handle this correctly. The case is included not because it tests the agent but because it tests that the agent does not invent friction where none exists.
+
+The second pair was substantially harder. The invoice was issued by `"ЈП Колекторски систем"` for the 2025-05 period, amount 63.00 MKD, with invoice number `25051450182`. The corresponding payment confirmation, however, recorded the vendor as `"ЈП Колекторски систем - Скопје"` — the same legal entity, written with the city suffix appended. The two strings are not equal. A naive SQL `WHERE vendor = vendor` match would fail; the rows are not joinable by string identity. This is the case the thesis is about.
+
+### What the agent did
+
+On the Телекабел case, Agent B called `list_pending_bills_for(vendor="Телекабел", period=null, amountMin=1405.00, amountMax=1407.00)`, received one candidate, and immediately called `mark_bill_paid` with confidence 0.97 and the reasoning string:
+
+> "Vendor, amount, and reference are exact matches; paid_date aligns with bill period."
+
+On the Колекторски case, the agent's filter choice is the interesting part. It did not pass the full vendor string seen on the payment ("ЈП Колекторски систем - Скопје"). It passed the core token "Колекторски" — exactly as the system prompt had instructed it to do — yielding one candidate (the invoice with the shorter vendor variant), which it then accepted with confidence 0.95 and the reasoning string:
+
+> "Vendor semantic match, exact amount, paid_date in N+1 month, and invoice reference '25051450182' appears verbatim in payment.reference."
+
+### The form of the reasoning is the thesis claim
+
+Both reasoning strings deserve attention not because they are correct (correctness was confirmed by the resulting database state, not by the prose) but because of *what vocabulary the agent chose to explain itself in*.
+
+The system prompt instructs the agent to use "semantic identity, not string equality" for vendor names, calls the period adjacency concept "N+1 month grace," and uses the word "verbatim" to describe shared reference tokens between payment and invoice. The Колекторски reasoning string contains all three terms: "vendor semantic match," "paid_date in N+1 month," "verbatim." The agent did not generate an arbitrary explanation in arbitrary vocabulary; it generated an explanation in *the rubric the prompt taught it*, and used that rubric to justify each component of its match decision against each criterion in the spec.
+
+This is the demonstrable property that distinguishes an agent from a classifier. A classifier returns a label. An agent returns a label *and an account of its reasoning*, and when the reasoning is expressed in terms the designer can read and the designer's spec is also expressed in those terms, the system becomes *audited by inspection of its own output*. The thesis claim is not that LLMs can match utility bills (they can, and that is unsurprising); the thesis claim is that a system designed in this shape produces traceable, justifiable, defensible decisions, and that the design is realizable in practice without exotic infrastructure — Semantic Kernel, a free-tier model, four narrow tools, and a thoughtfully written prompt.
+
+### Calibration without intervention
+
+Both decisions landed in the confidence band the prompt specified for `mark_bill_paid` (≥ 0.85). The Колекторски case, despite being the harder of the two — vendor variant, no shared period field, only a shared invoice number to disambiguate — was rated 0.95 by the agent. The Телекабел case, with identical vendor strings and shared reference, was rated 0.97. The two-point gap between them mirrors the relative difficulty of the cases as a human reader would assess them: both confident, both safe to commit, the Телекабел case marginally cleaner.
+
+The defense-in-depth confidence threshold in `MarkBillPaidAsync` (0.85 in C#, mirroring the 0.85 floor in the prompt) was never triggered. The runtime safety net exists to catch a misbehaving agent; in practice on real data the agent stayed inside its own calibration band, and the warning log path remained cold. This is the desired equilibrium: the runtime check is silent infrastructure, audited but unused, present in the architecture precisely so that one cannot argue the system trusts the model unconditionally.
+
+### Why this matters in the defense
+
+This first-run validation is the demonstration paragraph for the agentic-systems chapter of the thesis. The committee can be shown three artifacts in sequence: the prompt (the spec, in natural language); the agent's reasoning string (the justification, in the same vocabulary as the spec); the database row (the resulting state mutation). Each artifact is human-readable. Each one corresponds to a step the model took. The fact that the vocabulary chains across all three — "semantic match" appears in the spec and in the reasoning, the state mutation reflects the decision the reasoning explains — is what distinguishes a defensible agentic system from a black-box LLM call wrapped in plumbing.
