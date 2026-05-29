@@ -538,3 +538,42 @@ For a higher-volume deployment the right move is batched: read the full J column
 ### Visual consequence: the demo loop closes
 
 The user-facing consequence of this change is that the `Status` column in the `Bills` tab now reflects the agent's reconciliation decisions in real time. A conditional-formatting rule that the user maintains by hand on the `Status` column — `paid` → green, `needs_review` → yellow, `pending` → no formatting — produces the visual change the committee will see during the demonstration: an email arrives, a row appears in the sheet with status `pending`, the reconciler runs, the cell turns green. The full visible loop closes inside one execution of the worker process, on real data, without any code in the visualization path having opinions about layout or color.
+
+
+---
+
+## 2026-05-28 — Continuous polling loop (Day 9): why polling, why interval, why configurable
+
+Day 9 converts the worker from a single-shot ingest script into a long-running service. The change is small in lines of code — a `while` loop, an OAuth initialization lifted out of the body, a per-tick try/catch — and large in what it says about the system's posture. The worker now is the thing that is running; the human is the thing that occasionally forwards email at it.
+
+### Why polling and not webhooks
+
+Gmail offers a push-notification channel via Cloud Pub/Sub, and a defensible-looking design could route a Pub/Sub topic at the worker over a public HTTPS endpoint, eliminating the polling cost entirely. This was considered and rejected on the same grounds recorded earlier in this document for the Supabase-versus-local-Postgres pivot: the public endpoint requires a deployment surface (a TLS certificate, a public DNS name, a tunneling tool or a hosted environment) that the thesis project does not have and does not need. Polling at the chosen granularity is well inside Gmail's per-user quota and well inside the latency tolerance of utility bills, which arrive on the timescale of days, not seconds.
+
+The trade is recorded honestly: a production deployment in a setting where bills must be visible within seconds of arrival would migrate to push. Nothing in the current architecture would have to change except the entrypoint — the per-tick body (`RunTickAsync`) is already the natural unit of work for a push handler. The design is push-ready, not push-implemented.
+
+### Why interval polling and not cron-style scheduling
+
+A second instinct, when the cadence question was raised, was to introduce a cron expression — "run at 09:00 every day" — configured as a string in `.env` and interpreted by a scheduler library such as NCrontab or Cronos. The instinct was correct in observing that "once a day" is the right *production* cadence for a system that ingests utility bills; it was wrong in concluding that cron is the right *mechanism*. The two are independent decisions, and the latter is the more consequential one.
+
+The mechanism chosen is a polling interval expressed as a `TimeSpan`, read from `BILLAGENT_POLL_INTERVAL` in `.env`, defaulting to one day. The interval is the time the worker sleeps between ticks, measured from process start, with no alignment to wall-clock boundaries. The dependency cost is zero — `TimeSpan.Parse` is in the standard library — and the configuration surface is a single value that means exactly what it says.
+
+The argument for choosing interval polling over a cron expression is the defense scenario specifically. A cron-scheduled worker that runs at 09:00 daily cannot be demonstrated by forwarding a bill to it at 14:00. An interval-polled worker configured at thirty seconds can. The committee will see the forward, the tick, the agent's reasoning, and the sheet update inside a single coherent demonstration window. The same code, configured with `BILLAGENT_POLL_INTERVAL=1.00:00:00` in production, runs once per day; configured with `BILLAGENT_POLL_INTERVAL=30` for the defense, runs every thirty seconds. The mechanism is unchanged; only the configuration varies. A cron-style design is deferred to the same category as Pub/Sub push notifications: a production-deployment concern that the thesis project deliberately does not implement, because the interval-polling design covers the demonstration scope without buying capability the demonstration does not need.
+
+### Idempotency is not new on Day 9
+
+The polling loop is safe to run on the same inbox forever because `BillRepository.HasProcessedAsync` consults the `email_log` table on each candidate message and skips any whose `gmail_message_id` is already present. The unique constraint on `gmail_message_id` introduced on Day 4 is the structural reason the loop terminates correctly at the end of each tick — there is no "where to resume from" bookkeeping, because the database itself is the resume cursor. This is the dividend the schema choice on Day 4 was made to pay. Day 9 cashes it.
+
+The opposite design — keeping a `last_seen_message_id` cursor in worker memory or in a config file — would have produced exactly the same behaviour in the happy path and a near-undebuggable bug the first time the worker crashed mid-tick. The database-as-cursor design has no such failure mode: a tick that crashes after persisting some messages and before persisting others leaves the persisted ones in `email_log` and the unpersisted ones absent from it, and the next tick picks up precisely the missing ones. Crash safety here is not a feature added; it is a feature that follows from the schema.
+
+### Failure is now an event, not a terminal condition
+
+The pre-Day-9 worker had one try/catch in `ExecuteAsync`. The catch logged the exception and the `finally` called `_lifetime.StopApplication()`. The Day 9 worker keeps a critical-failure escape hatch for the OAuth initialization step — no point looping if we cannot talk to Gmail at all — and otherwise treats every per-tick exception as a transient condition to log and retry. This is the canonical posture for a polling service and the reason the worker can survive a Gmail 5xx, a Postgres reconnect, a Gemini rate limit, or a Sheets API blip without manual intervention.
+
+The trade-off recorded here is that *silent* failures become possible — a bug that always throws on a particular malformed PDF will throw on every tick forever, filling the logs and never persisting that bill. The intended response is the `needs_review` status path on the Agent A side (Day 11), at which point the malformed PDF is captured as a database row with low confidence instead of a recurring exception. Day 9's loop is, in that sense, a forward bet on Day 11's robustness work.
+
+### Why the sweep runs every tick
+
+A natural micro-optimization would be to skip Agent B's sweep on ticks where no new messages were ingested. It was rejected. Agent B reconciles based on the state of the `bills` and `payments` tables, not on the events of the current tick. A payment confirmation that arrived two ticks ago and could not be matched at the time — because the invoice it pays had not yet been ingested — must still be revisited on every subsequent tick until the invoice arrives. Coupling the sweep to "ingested something this tick" would mean a payment that arrives after its invoice goes matched, and a payment that arrives before its invoice stays unmatched indefinitely. The sweep is cheap when the unmatched-payment set is empty (one SQL query returning zero rows) and necessary when it is not.
+
+The visible side of the trade is purely cosmetic: the sweep header is printed only on ticks where at least one new message was ingested, so the steady-state log stays quiet. The sweep itself runs unconditionally.

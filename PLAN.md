@@ -81,10 +81,15 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] Verify cells turn green via the conditional-formatting rule (no code involved in the colors)
   - [x] Commit: "feat: sheet upsert on status change (Day 8)"
 
-- [ ] **Day 9 — Continuous loop**
-  - [ ] `BackgroundService` polls Gmail every 5 min
-  - [ ] Idempotency: skip already-processed `gmail_message_id`
-  - [ ] Commit: "feat: continuous polling worker"
+- [ ] **Day 9 — Continuous loop** *(configurable polling interval — see DECISIONS.md)*
+  - [ ] `Worker.ExecuteAsync` wraps ingest + sweep in a `while (!stoppingToken.IsCancellationRequested)` loop
+  - [ ] OAuth init lifted out of the loop body (once per process, not once per tick)
+  - [ ] Per-tick try/catch — transient errors logged, next tick still runs
+  - [ ] `BILLAGENT_POLL_INTERVAL` in `.env`: bare int = seconds, or TimeSpan string. Default 1 day.
+  - [ ] Idempotency: `HasProcessedAsync` already skips processed `gmail_message_id` (inherited from Day 4)
+  - [ ] Test: set `BILLAGENT_POLL_INTERVAL=30`, forward a bill, watch it land within 30s
+  - [ ] Test: Ctrl+C wakes the worker within ~1s (not at the end of the interval)
+  - [ ] Commit: "feat: continuous polling worker w/ configurable TimeSpan interval (Day 9)"
 
 - [ ] **Day 10 — Telegram bot + Agent C** *(replaces Blazor dashboard — see DECISIONS.md)*
   - [ ] Create bot via @BotFather, store token in secrets
