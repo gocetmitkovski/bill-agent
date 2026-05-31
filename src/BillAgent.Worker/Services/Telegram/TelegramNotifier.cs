@@ -57,24 +57,33 @@ public class TelegramNotifier
         if (!_enabled || _client is null)
             return;
 
-        if (_whitelist.PushDestination is not long chatId)
+        // Broadcast to EVERY whitelisted chat, not just the first. With two
+        // operators (two phones) both should receive state-change notifications.
+        // Each send is independent: one failure must not suppress the others, and
+        // a Telegram outage must never bubble up into the ingest/reconcile pipeline.
+        var destinations = _whitelist.All;
+        if (destinations.Count == 0)
         {
             _logger.LogDebug("Telegram push skipped: whitelist empty, no destination configured.");
             return;
         }
 
-        try
+        foreach (var chatId in destinations)
         {
-            await _client.SendMessage(
-                chatId: chatId,
-                text: text,
-                parseMode: ParseMode.None,
-                cancellationToken: ct);
-        }
-        catch (Exception ex)
-        {
-            // Swallow — Telegram is a notifier, not a source of truth.
-            _logger.LogError(ex, "Telegram send failed (chat {ChatId}). Continuing.", chatId);
+            try
+            {
+                await _client.SendMessage(
+                    chatId: chatId,
+                    text: text,
+                    parseMode: ParseMode.None,
+                    cancellationToken: ct);
+            }
+            catch (Exception ex)
+            {
+                // Swallow per-recipient — Telegram is a notifier, not a source of
+                // truth, and one bad recipient must not block the others.
+                _logger.LogError(ex, "Telegram send failed (chat {ChatId}). Continuing.", chatId);
+            }
         }
     }
 }
