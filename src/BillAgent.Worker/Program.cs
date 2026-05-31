@@ -2,6 +2,7 @@ using BillAgent.Worker;
 using BillAgent.Worker.Data;
 using BillAgent.Worker.Services;
 using BillAgent.Worker.Services.Reconciler;
+using BillAgent.Worker.Services.Telegram;
 using DotNetEnv;
 using Microsoft.EntityFrameworkCore;
 
@@ -32,6 +33,18 @@ builder.Services.AddSingleton<BillRepository>();
 // Agent B (the Reconciler). Singleton because it carries no per-request state;
 // each ReconcileOneAsync opens its own DbContext scope and builds a fresh Kernel.
 builder.Services.AddSingleton<ReconcilerAgent>();
+
+// ── Day 10: Telegram bot + Agent C ─────────────────────────────────────────
+// Notifier is the push side (used by Worker + ReconcilerAgent).
+// QueryAgent is Agent C — the read-only chat agent.
+// BotHost is a SECOND BackgroundService that long-polls Telegram for inbound
+// messages. The main Worker handles ingest/reconcile; the BotHost handles user
+// chat. They run in the same process but don't share a polling loop.
+builder.Services.AddSingleton<TelegramWhitelist>();
+builder.Services.AddSingleton<TelegramNotifier>();
+builder.Services.AddSingleton<QueryAgent>();
+builder.Services.AddHostedService<TelegramBotHost>();
+
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();

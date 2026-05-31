@@ -1,4 +1,5 @@
 using BillAgent.Worker.Data;
+using BillAgent.Worker.Services.Telegram;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -36,6 +37,7 @@ public class ReconcilerAgent
     private readonly ILoggerFactory _loggerFactory;
     private readonly IServiceProvider _services;
     private readonly SheetsWriter _sheets;
+    private readonly TelegramNotifier _telegram;
     private readonly string _apiKey;
 
     public ReconcilerAgent(
@@ -43,12 +45,14 @@ public class ReconcilerAgent
         ILoggerFactory loggerFactory,
         IServiceProvider services,
         SheetsWriter sheets,
+        TelegramNotifier telegram,
         IConfiguration config)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _services = services;
         _sheets = sheets;
+        _telegram = telegram;
         _apiKey = config["GEMINI_API_KEY"]
             ?? throw new InvalidOperationException("GEMINI_API_KEY missing.");
     }
@@ -149,16 +153,24 @@ public class ReconcilerAgent
         // (Day 5 design); we update the Status cell of the affected bill row
         // OUTSIDE the agent's tool surface so the four narrow tools stay narrow.
         // Failure here logs and continues — Postgres is the source of truth.
+        string? billVendor = null;
+        decimal? billAmount = null;
+        string? billCurrency = null;
         if (toolset.Outcome.BillId is Guid billId)
         {
             try
             {
                 var bill = await db.Bills
                     .Where(b => b.Id == billId)
-                    .Select(b => new { b.GmailMessageId, b.Status })
+                    .Select(b => new { b.GmailMessageId, b.Status, b.Vendor, b.Amount, b.Currency })
                     .FirstOrDefaultAsync(ct);
                 if (bill is not null)
+                {
+                    billVendor = bill.Vendor;
+                    billAmount = bill.Amount;
+                    billCurrency = bill.Currency;
                     await _sheets.UpdateBillStatusAsync(bill.GmailMessageId, bill.Status, ct);
+                }
             }
             catch (Exception ex)
             {
@@ -167,7 +179,62 @@ public class ReconcilerAgent
             }
         }
 
+        // ── Project outcome to Telegram ──────────────────────────────────────
+        // Same pattern as the Sheet projection: agent decides, system projects.
+        // Three distinct event types so the user can ignore matches and pay
+        // attention to needs_review without scanning the chat.
+        //
+        // De-dup: ambiguous/unmatched payments stay in the sweep set forever
+        // (matched_bill_id is left NULL by design so a human can complete the
+        // match later). Without de-dup, every tick re-decides the same outcome
+        // and re-notifies. We persist last_notified_outcome on the payment row
+        // and skip sends where the about-to-send status is unchanged.
+        await PushOutcomeAsync(db, payment, toolset.Outcome, billVendor, billAmount, billCurrency, ct);
+
         return toolset.Outcome;
+    }
+
+    private async Task PushOutcomeAsync(
+        BillAgentDbContext db, Payment payment, ReconcilerOutcome outcome,
+        string? billVendor, decimal? billAmount, string? billCurrency,
+        CancellationToken ct)
+    {
+        var statusName = outcome.Status.ToString();
+
+        // Short-circuit: same outcome as last time means nothing to say.
+        if (payment.LastNotifiedOutcome == statusName)
+        {
+            _logger.LogDebug(
+                "Skip Telegram push for payment {Id}: outcome {Status} already notified.",
+                payment.Id, statusName);
+            return;
+        }
+
+        // Use the bill's vendor/amount when we matched something; fall back to
+        // the payment's own fields when we didn't (unmatched case).
+        var vendor = billVendor ?? payment.Vendor ?? "(unknown)";
+        var amount = billAmount ?? payment.Amount;
+        var currency = billCurrency ?? payment.Currency;
+
+        var text = outcome.Status switch
+        {
+            ReconcilerStatus.Matched =>
+                $"✅ Paid — {vendor}, {amount:0.00} {currency} (conf {outcome.Confidence:0.00})",
+            ReconcilerStatus.Ambiguous =>
+                $"⚠️ Needs review — {vendor}, {amount:0.00} {currency} (conf {outcome.Confidence:0.00})\n{outcome.Reasoning}",
+            ReconcilerStatus.Unmatched =>
+                $"❓ Unmatched payment — {vendor}, {amount:0.00} {currency}\n{outcome.Reasoning}",
+            _ => null,
+        };
+        if (text is null) return;
+
+        await _telegram.SendAsync(text, ct);
+
+        // Persist AFTER the send so a Telegram failure leaves the column NULL
+        // and we retry on the next tick. Worst case is duplicate-send on transient
+        // Telegram errors; preferable to silent missed notifications.
+        payment.LastNotifiedOutcome = statusName;
+        await db.SaveChangesAsync(ct);
     }
 
     // ── retry on rate-limit, same shape as BillExtractor ─────────────────────

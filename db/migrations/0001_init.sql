@@ -75,6 +75,7 @@ CREATE TABLE payments (
     confidence           DOUBLE PRECISION NOT NULL,
     reasoning            TEXT,
     matched_bill_id      UUID REFERENCES bills(id) ON DELETE SET NULL,  -- filled by Agent B
+    last_notified_outcome TEXT,                  -- de-dup for Day 10 Telegram pushes (Matched/Ambiguous/Unmatched)
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

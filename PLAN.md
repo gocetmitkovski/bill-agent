@@ -81,23 +81,31 @@ Tick boxes as you finish. Each day is bite-sized — 1 to 3 hours of focused wor
   - [x] Verify cells turn green via the conditional-formatting rule (no code involved in the colors)
   - [x] Commit: "feat: sheet upsert on status change (Day 8)"
 
-- [ ] **Day 9 — Continuous loop** *(configurable polling interval — see DECISIONS.md)*
-  - [ ] `Worker.ExecuteAsync` wraps ingest + sweep in a `while (!stoppingToken.IsCancellationRequested)` loop
-  - [ ] OAuth init lifted out of the loop body (once per process, not once per tick)
-  - [ ] Per-tick try/catch — transient errors logged, next tick still runs
-  - [ ] `BILLAGENT_POLL_INTERVAL` in `.env`: bare int = seconds, or TimeSpan string. Default 1 day.
-  - [ ] Idempotency: `HasProcessedAsync` already skips processed `gmail_message_id` (inherited from Day 4)
-  - [ ] Test: set `BILLAGENT_POLL_INTERVAL=30`, forward a bill, watch it land within 30s
-  - [ ] Test: Ctrl+C wakes the worker within ~1s (not at the end of the interval)
-  - [ ] Commit: "feat: continuous polling worker w/ configurable TimeSpan interval (Day 9)"
+- [x] **Day 9 — Continuous loop** *(configurable polling interval — see DECISIONS.md)*
+  - [x] `Worker.ExecuteAsync` wraps ingest + sweep in a `while (!stoppingToken.IsCancellationRequested)` loop
+  - [x] OAuth init lifted out of the loop body (once per process, not once per tick)
+  - [x] Per-tick try/catch — transient errors logged, next tick still runs
+  - [x] `BILLAGENT_POLL_INTERVAL` in `.env`: bare int = seconds, or TimeSpan string. Default 1 day.
+  - [x] Idempotency: `HasProcessedAsync` already skips processed `gmail_message_id` (inherited from Day 4)
+  - [x] Test: set `BILLAGENT_POLL_INTERVAL=30`, forward a bill, watch it land within 30s
+  - [x] Test: Ctrl+C wakes the worker within ~1s (not at the end of the interval)
+  - [x] Commit: "feat: continuous polling worker w/ configurable TimeSpan interval (Day 9)"
 
-- [ ] **Day 10 — Telegram bot + Agent C** *(replaces Blazor dashboard — see DECISIONS.md)*
-  - [ ] Create bot via @BotFather, store token in secrets
-  - [ ] `Telegram.Bot` NuGet + long-polling client
-  - [ ] Push notifications from Agent B (new invoice / payment confirmed / needs review)
-  - [ ] Agent C: query agent with tools (`list_bills`, `bill_status`, `monthly_summary`, `unpaid_count`, `yearly_total`)
-  - [ ] Chat history per user_id so follow-up questions work
-  - [ ] Commit: "feat: telegram bot + query agent"
+- [x] **Day 10 — Telegram bot + Agent C** *(replaces Blazor dashboard — see DECISIONS.md)*
+  - [x] Create bot via @BotFather, token in `.env` as `BILLAGENT_TELEGRAM_BOT_TOKEN`
+  - [x] `Telegram.Bot` NuGet (22.10) + long-polling `TelegramBotHost : BackgroundService`
+  - [x] Push notifications (`TelegramNotifier`): new invoice (Agent A), paid / needs_review / unmatched (Agent B)
+  - [x] Notification de-dup: `payments.last_notified_outcome` so unmatched/ambiguous notify once, not every tick (migration 0002)
+  - [x] Agent C (`QueryAgent`) — 6 read-only tools: `find_vendors`, `list_bills`, `bill_status`, `monthly_summary`, `unpaid_count`, `yearly_total`
+  - [x] Per-chat history (ConcurrentDictionary<long, ChatHistory>, capped at 20 messages)
+  - [x] Whitelist (`BILLAGENT_TELEGRAM_ALLOWED_CHAT_IDS`) — bootstrap mode prints inbound chat_id, rejected senders get a polite reply with their own id
+  - [x] **BOOTSTRAP:** run, send /start to bot, copy chat_id from console log, paste into `.env`, restart
+  - [x] Verify push: forward a bill, confirm Telegram message arrives
+  - [x] Verify Agent C: ask "any unpaid?", "show me April", "how much paid Телекабел this year?"
+  - [x] Fix: SK Gemini connector emits role="function" (400) → manual tool loop for Agent C (see DECISIONS.md)
+  - [x] Fix: silent-zero answers → runtime date injection (model has no clock) + `find_vendors` resolve-before-query
+  - [x] Fix: intermittent empty Gemini candidate → nudge-once then actionable fallback (no more "(no reply)")
+  - [x] Commit: "feat: telegram bot + Agent C (Day 10)"
 
 - [ ] **Day 11 — Edge cases**
   - [ ] Vision fallback when PdfPig returns empty text

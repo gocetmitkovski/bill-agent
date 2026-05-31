@@ -1,6 +1,7 @@
 using System.Text.Json;
 using BillAgent.Worker.Services;
 using BillAgent.Worker.Services.Reconciler;
+using BillAgent.Worker.Services.Telegram;
 
 namespace BillAgent.Worker;
 
@@ -22,6 +23,7 @@ public class Worker : BackgroundService
     private readonly BillRepository _repo;
     private readonly SheetsWriter _sheets;
     private readonly ReconcilerAgent _reconciler;
+    private readonly TelegramNotifier _telegram;
     private readonly IHostApplicationLifetime _lifetime;
 
     public Worker(
@@ -32,6 +34,7 @@ public class Worker : BackgroundService
         BillRepository repo,
         SheetsWriter sheets,
         ReconcilerAgent reconciler,
+        TelegramNotifier telegram,
         IHostApplicationLifetime lifetime)
     {
         _logger = logger;
@@ -41,6 +44,7 @@ public class Worker : BackgroundService
         _repo = repo;
         _sheets = sheets;
         _reconciler = reconciler;
+        _telegram = telegram;
         _lifetime = lifetime;
     }
 
@@ -175,6 +179,16 @@ public class Worker : BackgroundService
                 {
                     _logger.LogError(ex, "Sheets append failed for {Id} — DB row is intact; manual re-sync required.", stub.Id);
                 }
+
+                // ── Day 10: notify the operator via Telegram ─────────────────
+                // Same projection-of-state-changes pattern as the Sheet:
+                // Agent A decides; the system projects the decision onto
+                // user-facing surfaces. The notifier is fail-soft — a Telegram
+                // outage must not break ingest.
+                var dueStr = inserted.DueDate.HasValue ? inserted.DueDate.Value.ToString("yyyy-MM-dd") : "no due date";
+                await _telegram.SendAsync(
+                    $"🧾 New invoice — {inserted.Vendor}, {inserted.Amount:0.00} {inserted.Currency} (due {dueStr})",
+                    stoppingToken);
             }
         }
 

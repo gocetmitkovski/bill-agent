@@ -138,6 +138,15 @@ public class Payment
     [Column("matched_bill_id")]
     public Guid? MatchedBillId { get; set; }
 
+    /// <summary>
+    /// Day 10 (post-build): which outcome was last pushed to Telegram for this payment.
+    /// Stored as the string form of ReconcilerStatus ("Matched"/"Ambiguous"/"Unmatched").
+    /// The notifier short-circuits when the about-to-send status equals this; a transition
+    /// to a different outcome (e.g. Ambiguous → Matched once an invoice arrives) still fires.
+    /// </summary>
+    [Column("last_notified_outcome")]
+    public string? LastNotifiedOutcome { get; set; }
+
     [Column("created_at")]
     public DateTimeOffset CreatedAt { get; set; }
 }
